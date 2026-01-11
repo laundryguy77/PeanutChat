@@ -49,6 +49,13 @@ class ToolExecutor:
             except json.JSONDecodeError:
                 return {"error": f"Invalid arguments format: {arguments}"}
 
+        # Map tool names (some models like gpt-oss use different names)
+        tool_name_map = {
+            "browser.search": "web_search",
+            "browser.open": "browse_website",
+        }
+        name = tool_name_map.get(name, name)
+
         if name == "web_search":
             return await self._execute_web_search(arguments)
         elif name == "browse_website":
@@ -58,7 +65,9 @@ class ToolExecutor:
         elif name == "search_conversations":
             return await self._execute_conversation_search(arguments)
 
-        return {"error": f"Unknown tool: {name}"}
+        # For unknown tools, return a helpful message instead of breaking
+        print(f"[TOOL] Unknown tool requested: {name}")
+        return {"error": f"Tool '{name}' is not available. Available tools: web_search, browse_website, search_conversations"}
 
     async def _execute_web_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute web search and fetch top results for comprehensive answers"""
@@ -189,7 +198,10 @@ class ToolExecutor:
 
     async def _execute_browse_website(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Browse a website and return its content"""
-        url = args.get("url", "").strip()
+        # Support both 'url' (our format) and 'id' (gpt-oss browser.open format)
+        url = args.get("url") or args.get("id", "")
+        if isinstance(url, str):
+            url = url.strip()
 
         # Validate URL format
         if not url:
