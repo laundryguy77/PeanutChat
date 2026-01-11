@@ -9,6 +9,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SETTINGS_FILE = Path(__file__).parent.parent / "settings.json"
+
+# Server settings
+APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
+APP_PORT = int(os.getenv("APP_PORT", "8080"))
+
+# Ollama API
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # Brave Search API
