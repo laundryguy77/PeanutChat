@@ -1,13 +1,18 @@
 import json
+import os
 from pathlib import Path
 from pydantic import BaseModel
 from typing import Optional
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 SETTINGS_FILE = Path(__file__).parent.parent / "settings.json"
-OLLAMA_BASE_URL = "http://10.10.10.124:11434"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # Brave Search API
-BRAVE_SEARCH_API_KEY = "BSAZdetIamzgaZnas3b1L3xoZFIxN0s"
+BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
 
 class AppSettings(BaseModel):
     persona: Optional[str] = None

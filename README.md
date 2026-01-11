@@ -100,7 +100,12 @@ PeanutChat/
 
 4. **Configure the application**
 
-   Edit `app/config.py` to set:
+   Copy the environment template and fill in your values:
+   ```bash
+   cp .env.template .env
+   ```
+
+   Edit `.env` to set:
    - `OLLAMA_BASE_URL` - Your Ollama server address
    - `BRAVE_SEARCH_API_KEY` - Your Brave Search API key
 
@@ -132,13 +137,16 @@ PeanutChat/
 | `persona` | Custom AI persona | `null` |
 | `tts_enabled` | Text-to-speech toggle | `false` |
 
-### Environment Configuration
+### Environment Variables
 
-Update `app/config.py` for your environment:
+Copy `.env.template` to `.env` and configure:
 
-```python
-OLLAMA_BASE_URL = "http://localhost:11434"  # Your Ollama instance
-BRAVE_SEARCH_API_KEY = "your-api-key-here"  # Brave Search API
+```bash
+# Ollama API endpoint
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Brave Search API key (get one at https://brave.com/search/api/)
+BRAVE_SEARCH_API_KEY=your-api-key-here
 ```
 
 ## API Endpoints
