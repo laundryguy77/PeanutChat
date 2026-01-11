@@ -34,6 +34,24 @@ CONVERSATION_SEARCH_TOOL = {
     }
 }
 
+BROWSE_WEBSITE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "browse_website",
+        "description": "Visit a specific URL and retrieve its content. Use this when you need to access a webpage directly (e.g., when given a URL, reading documentation, accessing a specific article). Returns the page content as readable text.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The full URL to visit (must start with http:// or https://)"
+                }
+            },
+            "required": ["url"]
+        }
+    }
+}
+
 IMAGE_GENERATION_TOOL = {
     "type": "function",
     "function": {
@@ -72,7 +90,7 @@ IMAGE_GENERATION_TOOL = {
 }
 
 # All available tools (image generation disabled to save VRAM/disk)
-ALL_TOOLS = [WEB_SEARCH_TOOL, CONVERSATION_SEARCH_TOOL]
+ALL_TOOLS = [WEB_SEARCH_TOOL, BROWSE_WEBSITE_TOOL, CONVERSATION_SEARCH_TOOL]
 
 def get_tools_for_model(is_vision: bool):
     """Get appropriate tools based on model capability"""

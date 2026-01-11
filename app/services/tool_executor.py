@@ -1,9 +1,17 @@
 from typing import Dict, Any, Optional, List
 import httpx
 import json
+import socket
+import ipaddress
+import time
+from urllib.parse import urlparse
 from app.services.image_generator import image_generator
 from app.services.conversation_store import conversation_store
 from app.config import BRAVE_SEARCH_API_KEY
+
+# URL cache: {url: {"content": ..., "timestamp": ..., "status": ...}}
+_url_cache: Dict[str, Dict[str, Any]] = {}
+URL_CACHE_TTL = 300  # 5 minutes
 
 
 class ToolExecutor:
@@ -43,6 +51,8 @@ class ToolExecutor:
 
         if name == "web_search":
             return await self._execute_web_search(arguments)
+        elif name == "browse_website":
+            return await self._execute_browse_website(arguments)
         elif name == "generate_image":
             return await self._execute_generate_image(arguments)
         elif name == "search_conversations":
@@ -131,6 +141,183 @@ class ToolExecutor:
             return {
                 "error": f"Search failed: {str(e)}",
                 "success": False
+            }
+
+    def _is_private_ip(self, hostname: str) -> bool:
+        """Check if a hostname resolves to a private/reserved IP address"""
+        try:
+            # Resolve hostname to IP
+            ip_str = socket.gethostbyname(hostname)
+            ip = ipaddress.ip_address(ip_str)
+
+            # Check if IP is private, loopback, link-local, or reserved
+            return (
+                ip.is_private or
+                ip.is_loopback or
+                ip.is_link_local or
+                ip.is_reserved or
+                ip.is_multicast
+            )
+        except (socket.gaierror, ValueError):
+            # If we can't resolve, be safe and block
+            return True
+
+    def _get_cached_url(self, url: str) -> Optional[Dict[str, Any]]:
+        """Get cached URL content if still valid"""
+        global _url_cache
+        if url in _url_cache:
+            cached = _url_cache[url]
+            if time.time() - cached["timestamp"] < URL_CACHE_TTL:
+                print(f"[BROWSE] Cache hit for: {url}")
+                return cached
+            else:
+                # Expired, remove from cache
+                del _url_cache[url]
+        return None
+
+    def _cache_url(self, url: str, result: Dict[str, Any]):
+        """Cache URL content"""
+        global _url_cache
+        _url_cache[url] = {
+            **result,
+            "timestamp": time.time()
+        }
+        # Clean old entries if cache gets too large
+        if len(_url_cache) > 100:
+            oldest_url = min(_url_cache, key=lambda u: _url_cache[u]["timestamp"])
+            del _url_cache[oldest_url]
+
+    async def _execute_browse_website(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Browse a website and return its content"""
+        url = args.get("url", "").strip()
+
+        # Validate URL format
+        if not url:
+            return {
+                "success": False,
+                "error": "URL is required."
+            }
+
+        if not url.startswith(('http://', 'https://')):
+            return {
+                "success": False,
+                "error": "URL must start with http:// or https://"
+            }
+
+        # Parse URL to get hostname
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            if not hostname:
+                return {
+                    "success": False,
+                    "error": "Invalid URL: could not extract hostname"
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Invalid URL format: {str(e)}"
+            }
+
+        # Security check: block private/internal IPs
+        if self._is_private_ip(hostname):
+            return {
+                "success": False,
+                "error": "Access to private/internal network addresses is blocked for security reasons."
+            }
+
+        # Check cache first
+        cached = self._get_cached_url(url)
+        if cached:
+            return {
+                "success": True,
+                "url": url,
+                "status": cached.get("status", 200),
+                "content": cached.get("content", ""),
+                "length": cached.get("length", 0),
+                "cached": True
+            }
+
+        print(f"[BROWSE] Fetching: {url}")
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, max_redirects=5) as client:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Accept-Encoding": "gzip, deflate",
+                    "DNT": "1",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1"
+                }
+                response = await client.get(url, headers=headers)
+
+                status = response.status_code
+
+                if status >= 400:
+                    return {
+                        "success": False,
+                        "url": url,
+                        "status": status,
+                        "error": f"HTTP error {status}: {response.reason_phrase}"
+                    }
+
+                content_type = response.headers.get("content-type", "")
+
+                # Handle different content types
+                if "application/json" in content_type:
+                    try:
+                        json_data = response.json()
+                        content = json.dumps(json_data, indent=2)[:10000]
+                    except:
+                        content = response.text[:10000]
+                elif "text/html" in content_type or "text/plain" in content_type or "text/xml" in content_type:
+                    html = response.text
+                    content = self._extract_text_from_html(html)
+                    # Truncate to reasonable size
+                    if len(content) > 10000:
+                        content = content[:10000] + "\n\n[Content truncated...]"
+                else:
+                    return {
+                        "success": False,
+                        "url": url,
+                        "status": status,
+                        "error": f"Unsupported content type: {content_type}. This tool only supports HTML, plain text, and JSON."
+                    }
+
+                result = {
+                    "success": True,
+                    "url": str(response.url),  # Final URL after redirects
+                    "status": status,
+                    "content": content,
+                    "length": len(content)
+                }
+
+                # Cache the result
+                self._cache_url(url, result)
+
+                print(f"[BROWSE] Success: {len(content)} characters extracted")
+
+                return result
+
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "url": url,
+                "error": "Request timed out after 10 seconds"
+            }
+        except httpx.TooManyRedirects:
+            return {
+                "success": False,
+                "url": url,
+                "error": "Too many redirects (maximum 5)"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "url": url,
+                "error": f"Failed to fetch URL: {str(e)}"
             }
 
     async def _brave_search(self, query: str, num_results: int) -> List[Dict[str, str]]:

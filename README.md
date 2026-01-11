@@ -170,9 +170,25 @@ BRAVE_SEARCH_API_KEY=your-api-key-here
 
 PeanutChat supports AI tool calling for enhanced capabilities:
 
-1. **Web Search** - Search the internet using Brave Search
-2. **Image Generation** - Create images with Stable Diffusion XL
-3. **Conversation Search** - Search through past conversations
+1. **Web Search** - Search the internet using Brave Search API
+2. **Browse Website** - Visit a specific URL and retrieve its content directly
+3. **Image Generation** - Create images with Stable Diffusion XL (currently disabled)
+4. **Conversation Search** - Search through past conversations
+
+### Browse Website Tool
+
+The `browse_website` tool allows the AI to visit URLs directly when you provide a link or need specific page content.
+
+**Features:**
+- Fetches and extracts readable text from web pages
+- Supports HTML, plain text, and JSON content
+- 5-minute response caching for performance
+- 10-second timeout to prevent hanging
+
+**Security:**
+- Blocks access to private/internal IP ranges (10.x.x.x, 192.168.x.x, 172.16.x.x, 127.x.x.x, etc.)
+- Limits redirects to prevent redirect loops
+- Content truncation to prevent memory issues
 
 ## License
 
