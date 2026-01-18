@@ -1,0 +1,38 @@
+#!/bin/sh
+# udhcpc script for Porteus Kiosk ARM64
+
+RESOLV_CONF="/etc/resolv.conf"
+
+case "$1" in
+    deconfig)
+        /sbin/ip addr flush dev $interface
+        /sbin/ip link set $interface up
+        ;;
+
+    renew|bound)
+        /sbin/ip addr flush dev $interface
+        /sbin/ip addr add $ip/${mask:-24} dev $interface
+
+        if [ -n "$router" ]; then
+            /sbin/ip route del default 2>/dev/null
+            for r in $router; do
+                /sbin/ip route add default via $r dev $interface
+            done
+        fi
+
+        if [ -n "$dns" ]; then
+            echo -n > $RESOLV_CONF
+            for d in $dns; do
+                echo "nameserver $d" >> $RESOLV_CONF
+            done
+        fi
+
+        if [ -n "$domain" ]; then
+            echo "search $domain" >> $RESOLV_CONF
+        fi
+
+        echo "[udhcpc] $interface: $ip/$mask gw=$router dns=$dns"
+        ;;
+esac
+
+exit 0

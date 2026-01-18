@@ -1,0 +1,385 @@
+#!/bin/sh
+# TuxOS first-run script - ARM64 port
+# Extracted from x86 shc binary, adapted for ARM64/Debian
+
+# ARM64 FIX: Create /tmp/log/md5 with default kiosk_version if missing
+# This is required for first-run scenario when system is unconfigured
+mkdir -p /tmp/log
+if [ ! -f /tmp/log/md5 ]; then
+    echo "kiosk_version=Client" > /tmp/log/md5
+    echo "[first-run] Created default /tmp/log/md5 with kiosk_version=Client"
+fi
+
+version="`grep kiosk_version /tmp/log/md5 2>/dev/null | head -n1 | cut -d= -f2-`"
+[ "$version" ] || { version="Client"; echo "kiosk_version=$version" >> /tmp/log/md5; }
+# ARM64 FIX: Check both aufs and overlay filesystem usage
+vfs_usage=$(df -h | grep -E 'aufs|overlay' | head -1 | tr -s ' ' | cut -d' ' -f5 | sed 's/%//')
+[ "${vfs_usage:-0}" -gt 30 ] && dunstify -u critical -i /usr/share/icons/oxygen/32x32/status/dialog-warning.png "WARNING: virtual filesystem size is low. If system installation fails then it could be due to not enough of RAM available on this PC.\nPlease increase the RAM size or do not enable any additional components (e.g. printing) for this machine." 2>/dev/null
+if grep -q 'ID: NOT_AVAILABLE' /etc/version; then
+# ARM64: Use ip link instead of ifconfig HWaddr (Debian doesn't show HWaddr)
+fmac=$(ip link | grep -E 'link/ether' | head -n1 | awk '{print $2}' | tr ':' '-' | tr '[:lower:]' '[:upper:]')
+fID="$(echo `echo $fmac | cut -c1,3,5,7,9,11,13``echo $fmac | rev | cut -c1,3,5,7,9,11,13`)"
+sed -i 's/NOT_AVAILABLE/'$fID'/g' /etc/version 2>/dev/null
+fi
+if [ $version = Server ]; then
+pcid=`grep ^ID: /etc/version | cut -d' ' -f2`-`grep ^MBID: /etc/version | cut -d' ' -f2`
+else
+pcid=`grep ^ID: /etc/version | cut -d' ' -f2`
+fi
+URLP=http://cullerdigitalmedia.com/peanutos
+PTH=/usr/share/icons/oxygen/22x22
+pth=/mnt/kiosk
+mkdir -p $pth/xzm $pth/docs $pth/boot 2>/dev/null
+# ARM64: GRUB not used on Raspberry Pi
+# bimg=/opt/scripts/files/GRUB
+wget="wget --no-http-keep-alive --no-cache --no-check-certificate"
+profile=/home/guest/.mozilla/firefox/c3pp43bg.default
+json=/etc/opt/chrome/policies/managed/chrome.json
+supplicant=/etc/wpa_supplicant.conf
+cleanup() { cd /; killall firefox chrome 2>/dev/null; rm -rf $pth /mnt/VER /tmp/config* /tmp/md5sum /tmp/log /opt/scripts/first-run /opt/scripts/wizard; }
+welcome() {
+killall dhcpcd wpa_supplicant wvdial 2>/dev/null
+killall dhcpcd wpa_supplicant wvdial 2>/dev/null
+rm -f /etc/resolv.conf /etc/ppp/resolv.conf
+unset http_proxy https_proxy ftp_proxy no_proxy
+# ARM64 FIX: Call welcome directly (or with bash) to honor its #!/bin/bash shebang
+# Using sh would run under busybox which lacks bash features
+/opt/scripts/welcome >>/mnt/logs/welcome.log 2>&1
+value() { grep "^$1=" /tmp/config | head -n1 | cut -d= -f2- | sed 's/[[:blank:]]*$//'; }
+iface=`value network_interface`
+ip=`value ip_address`
+netmask=`value netmask`
+gateway=`value default_gateway`
+dns=`value dns_server`
+ssid=`value ssid_name`
+hssid=`value hidden_ssid_name`; [ "$hssid" ] && { ssid="$hssid"; scan_value=1; } || scan_value=0
+enc=`value wifi_encryption`
+wpa=`value wpa_password`
+wep=`value wep_key`
+peapu=`value peap_username`
+peapp=`value peap_password`
+dphone=`value dialup_phone_number`
+duser=`value dialup_username`
+dpass=`value dialup_password`
+wauth=`value wired_authentication`
+eapolu=`value eapol_username`
+eapolp=`value eapol_password`
+proxy=`value proxy`
+noproxy=`value proxy_exceptions | tr " " ","`
+proxypac=`value proxy_config`
+browser=`value browser`
+if [ "$ssid" ]; then
+if [ "$enc" = wpa ]; then
+PSK=`wpa_passphrase "$ssid" "$wpa" | grep psk=[a-f,0-9] | cut -d= -f2`
+cat > $supplicant << EOF
+ctrl_interface=/var/run/wpa_supplicant
+ctrl_interface_group=0
+eapol_version=1
+ap_scan=1
+network={
+scan_ssid=$scan_value
+ssid="$ssid"
+key_mgmt=WPA-PSK
+psk=$PSK
+}
+EOF
+elif [ "$enc" = eap-peap ]; then
+cat > $supplicant << EOF
+ctrl_interface=/var/run/wpa_supplicant
+ctrl_interface_group=0
+eapol_version=1
+ap_scan=1
+network={
+scan_ssid=$scan_value
+ssid="$ssid"
+key_mgmt=WPA-EAP
+eap=PEAP
+identity="$peapu"
+password="$peapp"
+phase2="auth=MSCHAPV2"
+}
+EOF
+elif [ "$enc" = wep ]; then
+cat > $supplicant << EOF
+ctrl_interface=/var/run/wpa_supplicant
+ctrl_interface_group=0
+eapol_version=1
+ap_scan=1
+network={
+scan_ssid=$scan_value
+ssid="$ssid"
+key_mgmt=NONE
+wep_key0=$wep
+wep_tx_keyidx=0
+}
+EOF
+else
+cat > $supplicant << EOF
+ctrl_interface=/var/run/wpa_supplicant
+ctrl_interface_group=0
+eapol_version=1
+ap_scan=1
+network={
+scan_ssid=$scan_value
+ssid="$ssid"
+key_mgmt=NONE
+}
+EOF
+fi
+rfkill unblock all 2>/dev/null
+if [ "$ip" ]; then
+ifconfig $iface up
+iwconfig $iface essid "$ssid" 2>/dev/null
+wpa_supplicant -B -i$iface -c $supplicant -Dnl80211,wext > /dev/null 2>&1
+else
+for nic in `iwconfig 2>/dev/null | cut -d" " -f1 | sed /^$/d | sort`; do
+ifconfig $nic up
+iwconfig $nic essid "$ssid" 2>/dev/null
+wpa_supplicant -B -i$nic -c $supplicant -Dnl80211,wext > /dev/null 2>&1
+done
+fi
+fi
+if [ "$wauth" = eapol ]; then
+cat > $supplicant << EOF
+ctrl_interface=/var/run/wpa_supplicant
+ctrl_interface_group=0
+eapol_version=2
+ap_scan=0
+network={
+key_mgmt=IEEE8021X
+eap=TTLS
+eapol_flags=0
+identity="$eapolu"
+password="$eapolp"
+phase1="auth=PAP"
+phase2="auth=PAP password=$eapolp"
+}
+EOF
+if [ "$ip" ]; then
+wpa_supplicant -B -i$iface -c $supplicant -Dwired >/dev/null 2>&1
+else
+for nic in `iwconfig 2>&1 | grep "no wireless extension" | grep -v lo | cut -d" " -f1 | sed /^$/d | sort`; do wpa_supplicant -B -i$nic -c $supplicant -Dwired >/dev/null 2>&1; done
+fi
+fi
+if [ "$ip" ]; then
+for nic in `ls -1 /sys/class/net | grep -v ^lo`; do ifconfig $nic down; done
+ifconfig $iface $ip netmask $netmask
+route add default gw $gateway $iface
+for srv in $dns; do echo "nameserver $srv" >> /etc/resolv.conf; done
+elif [ "$duser" ]; then
+[ -e /opt/scripts/files/wvdial.conf ] && cp -a /opt/scripts/files/wvdial.conf /etc/wvdial.conf || cp -a /etc/wvdial.conf /opt/scripts/files/wvdial.conf
+killall wvdial 2>/dev/null
+for nic in `ls -1 /sys/class/net | grep -v ^lo`; do ifconfig $nic down; done
+sed -i -e s/dialup-username/"$duser"/g -e s/dialup-password/"$dpass"/g -e s/dialup-phone-number/"$dphone"/g /etc/wvdial.conf 2>/dev/null
+wvdialconf 2>/dev/null
+wvdial & 2>/dev/null
+TRIES=40
+(
+while [ $TRIES -gt 0 ]; do grep -q nameserver /etc/ppp/resolv.conf && cp -a /etc/ppp/resolv.conf /etc && break || TRIES=$((TRIES-1)); sleep 1; done
+) &
+else
+for nic in `ls -1 /sys/class/net | grep -v ^lo`; do
+dhcpcd -L -t 0 $nic >/dev/null 2>&1 &
+done
+fi
+}
+set_network() {
+/opt/scripts/wizard-now &
+ppac=null
+if [ "$proxypac" ]; then
+dunstify -u normal -i $PTH/status/dialog-information.png "Downloading proxy autoconfiguration file: $proxypac - this may take a while ..." 2>/dev/null
+sleep 1; TRIES=30
+while [ $TRIES -gt 0 ]; do test -e /tmp/launch-wizard && break; $wget -q -T20 -t1 --spider $proxypac && break || { dunstify -u normal -i /usr/share/icons/oxygen/32x32/status/dialog-information.png "$proxypac is not accessible - probably more time is needed to initialize connection.\nNumber of tries left: $TRIES" 2>/dev/null; TRIES=$((TRIES-1)); sleep 2; }; done
+if [ ! -e /tmp/launch-wizard ]; then
+$wget -q -T20 -t3 -O /opt/scripts/proxy.pac $proxypac
+proxy=`pactester -p /opt/scripts/proxy.pac -u http://cullerdigitalmedia.com 2>/dev/null | tr -s ' ' | cut -d" " -f2 | sed 's/[^0-9a-zA-Z.:]*//g'`
+[ "$proxy" ] || { ppac=fail; dunstify -u critical -i /usr/share/icons/oxygen/32x32/status/dialog-warning.png "$proxypac is not accessible.\nPlease setup the network once again. (click on this message to dismiss)" 2>/dev/null; }
+fi
+fi
+if [ ! -e /tmp/launch-wizard ]; then
+if [ "$ppac" != fail ]; then
+[ -n "$proxy" -a "$proxy" != DIRECT ] && { export http_proxy="http://$proxy" https_proxy="http://$proxy" ftp_proxy="http://$proxy"; [ "$noproxy" ] && export no_proxy="$noproxy"; }
+dunstify -u normal -i $PTH/status/dialog-information.png "Trying to access http://cullerdigitalmedia.com website - this may take a while ..." 2>/dev/null
+sleep 1; TRIES=49
+while [ $TRIES -gt 0 ]; do test -e /tmp/launch-wizard && break; $wget -q -T20 -t1 -O- $URLP/md5sum?$pcid | grep -q .xzm && network=yes && break || { dunstify -u normal -i /usr/share/icons/oxygen/32x32/status/dialog-information.png "http://cullerdigitalmedia.com is not accessible - probably more time is needed to initialize connection.\nNumber of tries left: $TRIES" 2>/dev/null; TRIES=$((TRIES-1)); sleep 2; }; done
+if [ ! -e /tmp/launch-wizard ]; then
+if [ $network = no ]; then
+dunstify -u critical -i /usr/share/icons/oxygen/32x32/status/dialog-warning.png "http://cullerdigitalmedia.com is not accessible - make that sure your firewall/proxy are not blocking it.\nPlease setup the network once again. (click on this message to dismiss)" 2>/dev/null
+sleep 2
+else
+dunstify -u normal -i $PTH/actions/dialog-ok-apply.png "Connection established successfully." 2>/dev/null
+[ "$proxy" ] && sed -i 's_^proxy=DIRECT_proxy='$proxy'_g' /etc/profile.d/proxy.sh 2>/dev/null
+[ "$noproxy" ] && sed -i 's_^#noproxy=_noproxy='$noproxy'_g' /etc/profile.d/proxy.sh 2>/dev/null
+if [ "$proxypac" ]; then
+sed -e 's/"ProxyMode": "system",/"ProxyMode": "pac_script",/g' -e 's_//"ProxyPacUrl"_"ProxyPacUrl"_g' -e 's|http://ip/proxy.pac|'$proxypac'|g' -i $json 2>/dev/null
+echo -e 'user_pref("network.proxy.autoconfig_url", "'$proxypac'");\nuser_pref("network.proxy.type", 2);' >> $profile/prefs.js 2>/dev/null
+fi
+fi
+fi
+fi
+fi
+rm -f /tmp/launch-wizard; kill -9 `ps | grep -w WizardNow | tr -s " " | cut -d: -f1 | rev | cut -d" " -f3 | rev | tr "\n" " "` 2>/dev/null
+}
+welcome
+if [ $browser = chrome ]; then
+rm -f $pth/xzm/002-firefox.xzm
+else
+rm -f $pth/xzm/002-chrome.xzm
+fi
+sh /opt/scripts/wizard >/dev/null 2>&1
+while [ -e /tmp/wizard-lock ]; do
+rm -r /tmp/kwiz.*
+sh /opt/scripts/wizard >/dev/null 2>&1
+done
+wallpaper=`value wallpaper`
+simage=`value splash`
+burn=`value burn_dev`
+spath=`value save_path`
+spsize=`grep ^system_partition_size= /tmp/config 2>/dev/null | head -n1 | cut -d= -f2-`; [ "$spsize" ] || { spsize=900; echo "system_partition_size=900" >> /tmp/config; }
+if [ $version = Server ]; then
+if grep -q Basic /tmp/server-choice; then
+# ARM64: Removed tracking URL call
+# $wget -q -T20 -t2 $URLP/server-Basic?$pcid
+echo -e "kiosk_server=pk_server" >> /tmp/config
+wallpaper=http://cullerdigitalmedia.com/peanutos/wallpapers/default.jpg
+elif grep -q Premium /tmp/server-choice; then
+# ARM64: Removed tracking URL call
+# $wget -q -T20 -t2 $URLP/server-Premium?$pcid
+echo -e "kiosk_server=pk_server\nautomatic_updates=yes\nchannel=000-pkserver" >> /tmp/config
+[ "`grep run_splash /proc/cmdline`" ] || wallpaper=http://cullerdigitalmedia.com/peanutos/wallpapers/default.jpg
+lspci | egrep -q 'VirtualBox|VMware' && cp -a $pth/xzm/005-server.xzm $pth/xzm/006-virt.xzm
+fi
+fi
+xzm="`value additional_components`"
+for x in $xzm; do
+echo $x | grep -q uefi.zip$ && dest=$pth/boot/isolinux/efi/efiboot.img || dest=$pth/xzm/$x
+test -e $dest || components="$x $components"
+done
+fetch_component() {
+DONE=no; TRIES=9
+while [ $TRIES -gt 0 ]; do
+while [ "$(pidof wget)" ]; do sleep 1; done
+# ARM64: Removed tracking URL calls
+# [ $TRIES = 8 ] && $wget -q -T20 -t2 $URLP/failed-dw-ins?$pcid
+[ $TRIES = 4 ] && { restart_net; }
+$wget -O $pth/xzm/$x $URLP/modules/$x 2>/tmp/out &
+VAR=0; pgs=0
+while [ "$pgs" -lt 100 ]; do
+sleep 1; pgs1=`tail -n5 /tmp/out | grep % | tail -n1 | cut -d"%" -f1 | rev | cut -d" " -f1 | rev`; [ "$pgs1" ] || pgs1=0
+[ "$pgs" -lt "$pgs1" ] && VAR=$(dunstify -p -r $VAR -u critical -i $PTH/status/dialog-information.png -h int:value:$pgs " Downloading $x component ...")
+pgs=`grep % /tmp/out | tail -n1 | cut -d"%" -f1 | rev | cut -d" " -f1 | rev`; [ "$pgs" ] || pgs=0
+done
+VAR=$(dunstify -p -r $VAR -u critical -i $PTH/status/dialog-information.png -h int:value:$pgs " Downloading $x component ...")
+while [ "$(pidof wget)" ]; do sleep 1; done; rm -f /tmp/out; sync
+[ $mdr = `md5sum $pth/xzm/$x | cut -d" " -f1` ] && { DONE=yes; break; } || { TRIES=$((TRIES-1)); echo 3 > /proc/sys/vm/drop_caches; rm -f $pth/xzm/$x; }
+done
+}
+if [ "$components" ]; then
+if $wget -q -T20 -t3 --spider http://cullerdigitalmedia.com/peanutos; then
+dunstify -u critical -i $PTH/status/dialog-information.png "Downloading additional components ..." 2>/dev/null
+else
+dunstify -u critical -i /usr/share/icons/oxygen/48x48/status/dialog-error.png "Network connection has been lost - cant perform the installation.\nPlease report this issue to support@cullerdigitalmedia.com\n\nSystem will shut down in 60 seconds." 2>/dev/null; cleanup; sleep 60; init 0
+fi
+for x in $components; do
+mdr=`grep " $x$" /tmp/log/md5sum | cut -d" " -f1`
+if [ "$mdr" ]; then
+fetch_component; [ $DONE = yes ] || { CS=`du -h $pth/xzm/$x | cut -f1`; CM=`md5sum $pth/xzm/$x | cut -d" " -f1`; dunstify -u critical -i /usr/share/icons/oxygen/48x48/status/dialog-error.png "Detected incorrect MD5 sum of the $x component, downloaded file size is: $CS\nmd5sum is: $CM\ncomparator is: $mdr\nCould not perform the installation. Please report this issue to support@cullerdigitalmedia.com" 2>/dev/null; cleanup; exit; }
+else
+dunstify -u critical -i /usr/share/icons/oxygen/48x48/status/dialog-error.png "$x component does not exist - could not perform the installation. Please make sure that component name is spelled correctly in the kiosk config." 2>/dev/null
+cleanup; exit
+fi
+done
+# ARM64: Removed tracking URL call
+# $wget -q -T20 -t2 $URLP/success-ins?$pcid
+fi
+[ -d $pth ] || { cleanup; exit; }
+# ARM64: Removed trial counter reference
+# grep -q ^trial_au /tmp/config && { tend="$((`$wget -q -O- http://cullerdigitalmedia.com/public/counter`+90))"; sed -i s/trial_au=yes/trial_au=$tend/g /tmp/config; }
+if echo "$xzm" | grep -q uefi.zip; then
+echo "$components" | grep -q uefi.zip && { unzip -o $pth/xzm/uefi.zip -d $pth/boot/isolinux 2>/dev/null; rm -f $pth/xzm/uefi.zip; }
+else
+rm -rf $pth/boot/isolinux/efi
+fi
+echo "$xzm" | grep -q initrdpxe.xz && mv $pth/xzm/initrdpxe.xz $pth/boot/pxelinux.cfg || rm -rf $pth/boot/pxelinux.cfg $pth/boot/pxelinux.0
+if [ $version != Server ]; then
+[ "`value kiosk_config`" ] || for y in `ls -1 $pth/xzm | grep ^[0-9][0-9]-.*.xzm$`; do echo $xzm | grep -q $y || rm -f $pth/xzm/$y; done
+fi
+if [ "$wallpaper" ]; then
+if [ "$proxypac" ]; then
+proxyw=`pactester -p /opt/scripts/proxy.pac -u $wallpaper | tr -s ' ' | cut -d" " -f2 | sed 's/[^0-9.:]*//g'`
+[ "$proxyw" = DIRECT ] && unset http_proxy https_proxy ftp_proxy || export http_proxy="http://$proxyw" https_proxy="http://$proxyw" ftp_proxy="http://$proxyw"
+$wget -q -O /tmp/default.jpg $wallpaper; cp -a /tmp/default.jpg $pth/docs/default.jpg 2>/dev/null
+[ "$proxy" != DIRECT ] && export http_proxy="http://$proxy" https_proxy="http://$proxy" ftp_proxy="http://$proxy"
+else
+$wget -q -O /tmp/default.jpg $wallpaper; cp -a /tmp/default.jpg $pth/docs/default.jpg 2>/dev/null
+fi
+fi
+rm -f /tmp/default.jpg; splash=PK.jpg
+# ARM64: Cloud/ThinClient splash not used
+# [ -e $pth/xzm/005-cloud.xzm ] && { splash=PKC.jpg; version="Cloud $version"; }
+# [ -e $pth/xzm/005-thinclient.xzm ] && { splash=PKTC.jpg; version="ThinClient $version"; }
+if [ "$version" = Server -o "`grep ^kernel_parameters=.*run_splash /tmp/config`" -o "`grep run_splash /proc/cmdline`" ]; then
+[ "$simage" ] && $wget -q -O /tmp/default.jpg $simage
+else
+$wget -q -O /tmp/default.jpg http://cullerdigitalmedia.com/peanutos/wallpapers/splash.jpg
+fi
+cp -a /tmp/default.jpg $pth/docs/kiosk.jpg 2>/dev/null
+if grep -q '^!' /tmp/config; then
+grep '^!' /tmp/config | sed 's/^!//g' > /tmp/config1
+grep -v '^!' /tmp/config > /tmp/cnf; mv -f /tmp/cnf /tmp/config
+echo "clwrosKXGt0bChL2njIXjANuvHRbWKPeTbkN3lVlWu" | openssl aes-256-cbc -md MD5 -a -in /tmp/config1 -out $pth/docs/kiosk.sgn1 -pass stdin 2>/dev/null
+dunstify -u critical -i $PTH/actions/dialog-ok-apply.png "Forced parameters present ..." 2>/dev/null
+fi
+# ARM64 TODO: Rewrite for Raspberry Pi boot method
+burn_ISO() {
+return 0
+# rm -f /sbin/udev-automount /etc/acpi/default.sh; umount -at no,aufs,proc,sysfs,devtmpfs,devpts; umount -at no,aufs,proc,sysfs,devtmpfs,devpts; umount -at no,aufs,proc,sysfs,devtmpfs,devpts
+# [ `echo $burn | cut -c1-3` = mmc -o `echo $burn | cut -c1-4` = nvme ] && { prtt=p; fps=40M; wsize=50M; } || { fps=2M; wsize=10M; }
+# trgt=$burn"$prtt"2
+# dd < /dev/zero > /dev/$burn bs=$wsize count=1 2>/dev/null
+# sync; sleep 1
+# echo -e 'n\np\n1\n\n+'$fps'\na\nn\np\n2\n\n+'$spsize'M\nn\np\n4\n\n\nw\n' | fdisk /dev/$burn >/dev/null
+# dd < $bimg/boot.img > /dev/$burn bs=446 count=1 2>/dev/null
+# dd < $bimg/core.img > /dev/$burn bs=512 seek=1 2>/dev/null
+# [ -b /dev/$burn"$prtt"1 ] || { sleep 2; sync; }
+# [ -b /dev/$burn"$prtt"1 ] || { sleep 2; sync; }
+# [ -b /dev/$burn"$prtt"1 ] || { trgt=$burn"$prtt"99; dunstify -u critical -i $PTH/status/dialog-information.png "Partitioning failed ..."; [ -b /dev/$burn ] && dstat=$burn-yes || dstat=$burn-no; }
+# mkfs.fat -F 12 /dev/$burn"$prtt"1; fatlabel /dev/$burn"$prtt"1 Boot; mkdir /mnt/efi; mount /dev/$burn"$prtt"1 /mnt/efi; mkdir -p /mnt/efi/EFI/BOOT; cp $bimg/bootia32.efi $bimg/bootx64.efi $bimg/startup.nsh /mnt/efi/EFI/BOOT; umount /mnt/efi
+# if [ `df -h | grep aufs | tr -s ' ' | cut -d' ' -f5 | sed 's/%//'` -gt 60 ]; then
+# lowvfs=yes
+# mkisofs -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . | dd > /dev/$burn"$prtt"2 bs=1M 2>/dev/null
+# else
+# if [ $TRIES -lt 4 ]; then
+# [ $TRIES = 3 ] && { dunstify -u critical -i $PTH/status/dialog-information.png "Switching burning method ..."; }
+# mkisofs -o ../kiosk.iso -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . >/dev/null 2>&1
+# cat /mnt/kiosk.iso > /dev/$burn"$prtt"2 2>/dev/null
+# else
+# mkisofs -o ../kiosk.iso -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . >/dev/null 2>&1
+# dd < /mnt/kiosk.iso > /dev/$burn"$prtt"2  bs=1M 2>/dev/null
+# fi
+# fi
+# sync; rm -f /mnt/kiosk.iso
+# [ -e /tmp/format_device ] && mkfs.xfs -f /dev/$burn"$prtt"4 >/dev/null
+}
+flash=`grep ^flash_url /tmp/config | cut -d= -f2-`
+if [ "$flash" ]; then
+dunstify -u normal -i $PTH/status/dialog-information.png "Downloading $flash/flash.zip" 2>/dev/null
+$wget -q -T 10 -O /tmp/flash.zip $flash/flash.zip
+unzip -o /tmp/flash.zip -d $pth/docs/flash
+rm -f /tmp/flash.zip
+fi
+cd $pth/docs
+zip -r /tmp/archive flash
+cd /
+rm -rf $pth/docs/flash
+echo 229depot | openssl aes-256-cbc -a -in /tmp/archive.zip -out $pth/docs/dump -pass stdin 2>/dev/null
+sed -i "s/ first_run//" $pth/boot/isolinux/isolinux.cfg; sed -i "s/ first_run//" $pth/boot/isolinux/grub.cfg 2>/dev/null
+kprm=`value kernel_parameters`; for x in $kprm; do kpar="$kpar $x"; done; kpar=`echo $kpar | sed "s/^ .//"`; bootf=$pth/boot/isolinux
+grep -q '\^' $bootf/isolinux.cfg && { oldp=`egrep -o " \^[^\^]+" $bootf/isolinux.cfg | sed s/^..//`; sed -i "s|\^$oldp\^|\^ $kpar \^|" $bootf/isolinux.cfg; } || sed -i "s|quiet|quiet \^ $kpar \^|" $bootf/isolinux.cfg
+grep -q '\^' $bootf/grub.cfg && { oldp=`egrep -o " \^[^\^]+" $bootf/grub.cfg | sed s/^..//`; sed -i "s|\^$oldp\^|\^ $kpar \^|" $bootf/grub.cfg; } || sed -i "s|quiet|quiet \^ $kpar \^|" $bootf/grub.cfg
+while [ "$(pidof wget)" ]; do sleep 1; done
+for x in $pth/boot/vmlinuz $pth/boot/initrd.xz $pth/boot/isolinux/isolinux.cfg $pth/docs/default.jpg $pth/xzm/*.xzm; do md5sum $x 2>/dev/null | cut -d" " -f1 >> /tmp/md5sum; done
+mac=`grep ^mac= /tmp/log/md5 2>/dev/null | head -n1 | cut -d= -f2-`
+echo `echo $mac | rev | cut -c1,3,5,7,9,11,13``echo $mac | cut -c1,3,5,7,9,11,13`XzY1 | openssl aes-256-cbc -md MD5 -a -in /tmp/md5sum -out $pth/docs/md5 -pass stdin 2>/dev/null
+echo `md5sum $pth/docs/md5 | cut -d" " -f1 | tr "a-z" "A-Z"`ZyX9 | openssl aes-256-cbc -md MD5 -a -in /tmp/config -out $pth/docs/config -pass stdin 2>/dev/null
+mv -f $pth/docs/md5 $pth/docs/kiosk.sgn; echo "clwrosKXGt0bChL2njIXjANuvHRbWKPeTbkN3lVlWu/ZB6TCPO54F0/LKk2H+lkk" >> $pth/docs/kiosk.sgn

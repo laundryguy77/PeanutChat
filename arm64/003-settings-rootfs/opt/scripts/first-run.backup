@@ -1,0 +1,444 @@
+#!/bin/bash
+#
+# first-run - Initial device setup script for TuxOS/Porteus Kiosk
+#
+# Called from: /etc/xdg/openbox/autostart line 97
+#   [ -e /opt/scripts/first-run ] && su -c /opt/scripts/first-run
+#
+# Context: Runs as guest user (via su -c) after X11 is up, before network wait loop
+#
+# Purpose:
+#   1. Check if this is truly first boot (no config exists)
+#   2. Launch the network/system configuration wizard
+#   3. Wait for wizard completion
+#   4. Process wizard output (/tmp/config)
+#   5. Save configuration to /opt/scripts/files/lcon
+#   6. Mark first-run as complete
+#   7. Optionally trigger update-config to burn config to storage
+#
+
+# ==============================================================================
+# Configuration
+# ==============================================================================
+
+SCRIPT_DIR=/opt/scripts
+CONFIG_DIR="${SCRIPT_DIR}/files"
+LOCAL_CONFIG="${CONFIG_DIR}/lcon"
+WIZARD_OUTPUT="/tmp/config"
+WIZARD_SCRIPT="${SCRIPT_DIR}/wizard"
+WIZARD_NOW_SCRIPT="${SCRIPT_DIR}/wizard-now"
+WELCOME_SCRIPT="${SCRIPT_DIR}/welcome"
+EXTRAS_FILE="${SCRIPT_DIR}/extras"
+FIRST_RUN_FLAG="${CONFIG_DIR}/.first-run-complete"
+
+# Icons for notifications
+ICON_INFO="/usr/share/icons/oxygen/48x48/status/dialog-information.png"
+ICON_WARN="/usr/share/icons/oxygen/48x48/status/dialog-warning.png"
+ICON_ERROR="/usr/share/icons/oxygen/48x48/status/dialog-error.png"
+ICON_OK="/usr/share/icons/oxygen/48x48/actions/dialog-ok-apply.png"
+
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+
+log_msg() {
+    # Log to both console and syslog
+    local msg="[first-run] $1"
+    echo "$msg"
+    logger -t first-run "$1"
+}
+
+notify() {
+    # Send desktop notification (if dunstify available)
+    local urgency="${2:-normal}"
+    local icon="${3:-$ICON_INFO}"
+    if command -v dunstify >/dev/null 2>&1; then
+        dunstify -u "$urgency" -i "$icon" "$1" 2>/dev/null
+    fi
+}
+
+is_first_run() {
+    # Check if this is truly first boot
+    # Returns 0 (true) if first run, 1 (false) otherwise
+
+    # Check 1: Flag file exists from previous successful run
+    if [ -f "$FIRST_RUN_FLAG" ]; then
+        log_msg "First run flag exists, skipping setup"
+        return 1
+    fi
+
+    # Check 2: Local config already exists and has content
+    if [ -f "$LOCAL_CONFIG" ] && [ -s "$LOCAL_CONFIG" ]; then
+        # Verify config has required fields
+        if grep -q "^kiosk_config=" "$LOCAL_CONFIG" 2>/dev/null; then
+            log_msg "Valid local config exists, skipping setup"
+            return 1
+        fi
+    fi
+
+    # Check 3: first_run=yes flag in extras (set by boot process)
+    if [ -f "$EXTRAS_FILE" ] && grep -q "^first_run=yes" "$EXTRAS_FILE" 2>/dev/null; then
+        log_msg "First run flag detected in extras"
+        return 0
+    fi
+
+    # Default: no config, no flag = first run
+    log_msg "No previous configuration found, starting first-run setup"
+    return 0
+}
+
+launch_wizard() {
+    # Launch the wizard sequence in CORRECT order:
+    # 1. wizard-now (prompt to start)
+    # 2. welcome (network configuration) - MUST be first to enable network
+    # 3. Apply network config (DHCP/WiFi) so we can download from remote server
+    # 4. wizard (TuxOS authorization + device selection)
+
+    local wizard_exit=1
+
+    # Clean up any previous wizard temp files
+    rm -f "$WIZARD_OUTPUT" 2>/dev/null
+    rm -rf /tmp/kwiz.* 2>/dev/null
+    rm -rf /tmp/knet 2>/dev/null
+
+    # Ensure config directory exists
+    mkdir -p "$CONFIG_DIR"
+
+    # =========================================================================
+    # Step 1: Show wizard-now prompt (30 second timeout)
+    # =========================================================================
+    if [ -x "$WIZARD_NOW_SCRIPT" ]; then
+        log_msg "Launching wizard prompt (wizard-now)"
+        "$WIZARD_NOW_SCRIPT" &
+        local wizard_now_pid=$!
+
+        # Wait up to 30 seconds for user to click "Launch" or close window
+        local count=0
+        while [ $count -lt 30 ]; do
+            # Check if user triggered launch
+            if [ -f "/tmp/launch-wizard" ]; then
+                log_msg "User triggered wizard launch"
+                rm -f /tmp/launch-wizard
+                # Kill the prompt window if still running
+                kill $wizard_now_pid 2>/dev/null
+                wait $wizard_now_pid 2>/dev/null
+                break
+            fi
+
+            # Check if window was closed
+            if ! kill -0 $wizard_now_pid 2>/dev/null; then
+                log_msg "Wizard prompt closed"
+                break
+            fi
+
+            sleep 1
+            count=$((count + 1))
+        done
+
+        # Kill prompt if still running (timeout)
+        if kill -0 $wizard_now_pid 2>/dev/null; then
+            log_msg "Wizard prompt timeout, proceeding"
+            kill $wizard_now_pid 2>/dev/null
+            wait $wizard_now_pid 2>/dev/null
+        fi
+    fi
+
+    # =========================================================================
+    # Step 2: Launch WELCOME (network wizard) FIRST
+    # This MUST run before wizard because we need network connectivity to
+    # download authorization key and dropdown data from cullerdigitalmedia.com
+    # =========================================================================
+    if [ -x "$WELCOME_SCRIPT" ]; then
+        log_msg "Launching network configuration wizard (welcome)"
+        notify "Configuring network connection..." "normal" "$ICON_INFO"
+
+        "$WELCOME_SCRIPT"
+        wizard_exit=$?
+        log_msg "Network wizard exited with code: $wizard_exit"
+
+        if [ $wizard_exit -ne 0 ]; then
+            log_msg "Network wizard failed or cancelled"
+            return 1
+        fi
+
+        # Network config should now be in /tmp/config
+        if [ ! -f "/tmp/config" ]; then
+            log_msg "WARNING: /tmp/config not created by welcome"
+        fi
+    else
+        log_msg "WARNING: welcome script not found at $WELCOME_SCRIPT"
+    fi
+
+    # =========================================================================
+    # Step 3: Apply network configuration so we have connectivity
+    # This enables the wizard to download from cullerdigitalmedia.com
+    # =========================================================================
+    log_msg "Applying network configuration..."
+
+    # Simple DHCP activation if dhcp=yes in config
+    if grep -q "^dhcp=yes" /tmp/config 2>/dev/null; then
+        local iface=""
+        if grep -q "^connection=wifi" /tmp/config 2>/dev/null; then
+            # WiFi - need to configure wpa_supplicant first
+            iface=$(iwconfig 2>/dev/null | grep -v "no wireless" | cut -d" " -f1 | sed '/^$/d' | head -n1)
+            if [ -n "$iface" ]; then
+                log_msg "Configuring WiFi on $iface"
+                # Extract WiFi parameters from config
+                local ssid=$(grep "^ssid_name=" /tmp/config 2>/dev/null | cut -d= -f2-)
+                local enc=$(grep "^wifi_encryption=" /tmp/config 2>/dev/null | cut -d= -f2-)
+                local wpa_pass=$(grep "^wpa_password=" /tmp/config 2>/dev/null | cut -d= -f2-)
+                local wep_key=$(grep "^wep_key=" /tmp/config 2>/dev/null | cut -d= -f2-)
+
+                if [ -n "$ssid" ]; then
+                    # Create wpa_supplicant config
+                    mkdir -p /tmp/wpa
+                    if [ "$enc" = "wpa" ] && [ -n "$wpa_pass" ]; then
+                        cat > /tmp/wpa/wpa.conf <<EOF
+network={
+    ssid="$ssid"
+    psk="$wpa_pass"
+    key_mgmt=WPA-PSK
+}
+EOF
+                    elif [ "$enc" = "wep" ] && [ -n "$wep_key" ]; then
+                        cat > /tmp/wpa/wpa.conf <<EOF
+network={
+    ssid="$ssid"
+    wep_key0=$wep_key
+    key_mgmt=NONE
+}
+EOF
+                    else
+                        # Open network
+                        cat > /tmp/wpa/wpa.conf <<EOF
+network={
+    ssid="$ssid"
+    key_mgmt=NONE
+}
+EOF
+                    fi
+                    ifconfig "$iface" up 2>/dev/null
+                    wpa_supplicant -B -i "$iface" -c /tmp/wpa/wpa.conf 2>/dev/null
+                    sleep 3
+                fi
+            fi
+        else
+            # Wired - find first ethernet interface
+            iface=$(ip link 2>/dev/null | grep -E "^[0-9]+: (eth|enp)" | head -1 | cut -d: -f2 | tr -d ' ')
+            [ -z "$iface" ] && iface="eth0"
+        fi
+
+        if [ -n "$iface" ]; then
+            log_msg "Running DHCP on $iface"
+            ifconfig "$iface" up 2>/dev/null
+            udhcpc -i "$iface" -t 5 -T 3 -A 3 -n 2>/dev/null &
+            sleep 5
+        fi
+    fi
+
+    # Wait briefly for network connectivity
+    log_msg "Waiting for network connectivity..."
+    for i in 1 2 3 4 5; do
+        ping -c 1 8.8.8.8 > /dev/null 2>&1 && {
+            log_msg "Network connected"
+            break
+        }
+        sleep 2
+    done
+
+    # =========================================================================
+    # Step 4: Launch WIZARD (TuxOS authorization + device config)
+    # Now that network is up, we can download from cullerdigitalmedia.com
+    # =========================================================================
+    if [ -x "$WIZARD_SCRIPT" ]; then
+        log_msg "Launching TuxOS authorization wizard"
+        notify "Starting device configuration..." "normal" "$ICON_INFO"
+
+        "$WIZARD_SCRIPT"
+        wizard_exit=$?
+        log_msg "TuxOS wizard exited with code: $wizard_exit"
+    else
+        log_msg "WARNING: TuxOS wizard not found at $WIZARD_SCRIPT"
+        # Not a fatal error - network config alone may be sufficient
+        wizard_exit=0
+    fi
+
+    return $wizard_exit
+}
+
+validate_config() {
+    # Validate the wizard output config file
+    # Returns 0 if valid, 1 if invalid/missing
+
+    if [ ! -f "$WIZARD_OUTPUT" ]; then
+        log_msg "ERROR: Wizard output file not found"
+        return 1
+    fi
+
+    if [ ! -s "$WIZARD_OUTPUT" ]; then
+        log_msg "ERROR: Wizard output file is empty"
+        return 1
+    fi
+
+    # Check for minimum required fields
+    # At minimum we need burn_dev and kiosk_config for proper operation
+    local required_fields="burn_dev kiosk_config"
+    local missing=""
+
+    for field in $required_fields; do
+        if ! grep -q "^${field}=" "$WIZARD_OUTPUT" 2>/dev/null; then
+            missing="$missing $field"
+        fi
+    done
+
+    if [ -n "$missing" ]; then
+        log_msg "WARNING: Missing optional config fields:$missing"
+        # Not a hard error - network-only config may be valid
+    fi
+
+    # Basic sanity check - should have at least a few lines
+    local lines
+    lines=$(wc -l < "$WIZARD_OUTPUT")
+    if [ "$lines" -lt 2 ]; then
+        log_msg "WARNING: Config has very few entries ($lines lines)"
+    fi
+
+    log_msg "Config validation passed ($lines lines)"
+    return 0
+}
+
+process_config() {
+    # Process wizard output and save to persistent location
+
+    log_msg "Processing wizard configuration..."
+
+    # Ensure config directory exists
+    mkdir -p "$CONFIG_DIR"
+
+    # Clean the config (remove DOS line endings, sanitize)
+    if [ -f "$WIZARD_OUTPUT" ]; then
+        # Remove DOS line endings if fromdos is available
+        if command -v fromdos >/dev/null 2>&1; then
+            fromdos "$WIZARD_OUTPUT" 2>/dev/null
+        fi
+
+        # Sanitize: remove non-printable chars except newlines
+        tr -dc '[:alnum:][:space:][:punct:]' < "$WIZARD_OUTPUT" | \
+            grep -v '^$' > "${WIZARD_OUTPUT}.clean" 2>/dev/null
+
+        if [ -s "${WIZARD_OUTPUT}.clean" ]; then
+            mv "${WIZARD_OUTPUT}.clean" "$WIZARD_OUTPUT"
+        fi
+    fi
+
+    # Copy to local config location
+    cp -f "$WIZARD_OUTPUT" "$LOCAL_CONFIG"
+
+    if [ $? -eq 0 ]; then
+        log_msg "Configuration saved to $LOCAL_CONFIG"
+
+        # Create the comparison config (without daemon_ lines for MD5 comparison)
+        grep -v '^daemon_' "$LOCAL_CONFIG" | \
+            grep -v '^burn_dev=' | \
+            grep -v '^md5conf=' > "${CONFIG_DIR}/lconc" 2>/dev/null
+
+        return 0
+    else
+        log_msg "ERROR: Failed to save configuration"
+        return 1
+    fi
+}
+
+mark_complete() {
+    # Mark first-run as complete
+
+    # Create flag file
+    date > "$FIRST_RUN_FLAG"
+
+    # Update extras file if it exists
+    if [ -f "$EXTRAS_FILE" ]; then
+        # Remove first_run=yes flag
+        sed -i '/^first_run=yes/d' "$EXTRAS_FILE" 2>/dev/null
+        log_msg "Removed first_run flag from extras"
+    fi
+
+    log_msg "First-run marked as complete"
+}
+
+trigger_update_config() {
+    # Trigger update-config to burn configuration to storage
+    # This is optional - only if update-config script exists
+
+    local update_script="${SCRIPT_DIR}/update-config"
+
+    if [ -x "$update_script" ]; then
+        log_msg "Triggering update-config to apply settings..."
+        notify "Applying configuration - please wait..." "normal" "$ICON_INFO"
+
+        # Run update-config (it will handle the burning/reboot)
+        # Note: update-config typically reboots after burning
+        "$update_script"
+
+        # If we get here, update-config didn't reboot
+        return $?
+    else
+        log_msg "update-config not found, configuration saved but not burned"
+        notify "Configuration saved. Reboot to apply changes." "normal" "$ICON_OK"
+        return 0
+    fi
+}
+
+# ==============================================================================
+# Main Script
+# ==============================================================================
+
+main() {
+    log_msg "Starting first-run check..."
+
+    # Check if first run is needed
+    if ! is_first_run; then
+        log_msg "Not first run, exiting normally"
+        exit 0
+    fi
+
+    log_msg "First run detected, starting setup"
+    notify "First-time setup - please configure your device" "normal" "$ICON_INFO"
+
+    # Launch the wizard
+    if ! launch_wizard; then
+        log_msg "Wizard failed or was cancelled"
+        notify "Setup cancelled or failed" "critical" "$ICON_WARN"
+        # Don't exit with error - allow boot to continue
+        # User can run wizard manually later
+        exit 0
+    fi
+
+    # Validate wizard output
+    if ! validate_config; then
+        log_msg "Configuration validation failed"
+        notify "Invalid configuration - please try again" "critical" "$ICON_ERROR"
+        # Allow retry on next boot
+        exit 0
+    fi
+
+    # Process and save configuration
+    if ! process_config; then
+        log_msg "Configuration processing failed"
+        notify "Failed to save configuration" "critical" "$ICON_ERROR"
+        exit 1
+    fi
+
+    # Mark first-run as complete
+    mark_complete
+
+    notify "Device configured successfully!" "normal" "$ICON_OK"
+    log_msg "First-run setup completed successfully"
+
+    # Trigger update-config to apply settings (may cause reboot)
+    trigger_update_config
+
+    exit 0
+}
+
+# Run main function
+main "$@"

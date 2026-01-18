@@ -1,0 +1,332 @@
+#!/bin/sh
+#
+# gui-app - TuxOS ARM64 Kiosk Browser Launcher
+#
+# Launches Chromium in kiosk mode with settings from config files.
+# Runs in infinite loop to restart browser on crash.
+#
+# Config sources (in priority order):
+#   1. /opt/scripts/files/lcon - Primary config (set by boot-config)
+#   2. /opt/scripts/extras     - Device state (fallback)
+#   3. /tmp/kiosk_url.env      - Alternative override file
+#   4. Default fallback        - about:blank
+#
+# Author: Joel (Cornerstone Holdings)
+# Based on: Porteus Kiosk gui-app by T.Jokiel
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+LCON="/opt/scripts/files/lcon"
+EXTRAS="/opt/scripts/extras"
+KIOSK_ENV="/tmp/kiosk_url.env"
+GUEST_BACKUP="/opt/scripts/guest"
+GUEST_HOME="/home/guest"
+LOG="/tmp/gui-app.log"
+
+# Chromium executable name varies by distribution
+CHROMIUM_BIN=""
+for bin in chromium chromium-browser chromium-browser-stable; do
+    if command -v "$bin" >/dev/null 2>&1; then
+        CHROMIUM_BIN="$bin"
+        break
+    fi
+done
+[ -z "$CHROMIUM_BIN" ] && CHROMIUM_BIN="chromium"
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"
+}
+
+log "=== gui-app started (PID $$) ==="
+log "Chromium binary: $CHROMIUM_BIN"
+
+# =============================================================================
+# CONFIGURATION READING
+# =============================================================================
+
+# Read a setting from config files (lcon takes precedence, then extras)
+get_setting() {
+    local key="$1"
+    local value=""
+
+    # Try lcon first
+    if [ -f "$LCON" ]; then
+        value=$(grep "^${key}=" "$LCON" 2>/dev/null | tail -1 | cut -d= -f2-)
+    fi
+
+    # Fall back to extras
+    if [ -z "$value" ] && [ -f "$EXTRAS" ]; then
+        value=$(grep "^${key}=" "$EXTRAS" 2>/dev/null | tail -1 | cut -d= -f2-)
+    fi
+
+    # Clean up value (remove leading/trailing whitespace and quotes)
+    echo "$value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//'
+}
+
+# Get homepage URL with fallback chain
+get_homepage() {
+    local url=""
+
+    # Priority 1: homepage from lcon (primary config set by boot-config)
+    if [ -f "$LCON" ]; then
+        url=$(grep "^homepage=" "$LCON" 2>/dev/null | tail -1 | cut -d= -f2-)
+    fi
+
+    # Priority 2: homepage from extras (device state fallback)
+    if [ -z "$url" ] && [ -f "$EXTRAS" ]; then
+        url=$(grep "^homepage=" "$EXTRAS" 2>/dev/null | tail -1 | cut -d= -f2-)
+    fi
+
+    # Priority 3: kiosk_url from either config (alternate name)
+    [ -z "$url" ] && url=$(get_setting "kiosk_url")
+
+    # Priority 4: Sourceable env file (alternative override)
+    if [ -z "$url" ] && [ -f "$KIOSK_ENV" ]; then
+        . "$KIOSK_ENV"
+        url="$KIOSK_URL"
+    fi
+
+    # Priority 5: Default
+    [ -z "$url" ] && url="about:blank"
+
+    # Clean up value
+    echo "$url" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//'
+}
+
+# =============================================================================
+# CHROMIUM FLAGS BUILDER
+# =============================================================================
+
+build_chromium_flags() {
+    local flags=""
+
+    # === CORE KIOSK FLAGS ===
+    # These are essential for kiosk operation
+    flags="$flags --kiosk"                              # Fullscreen kiosk mode
+    flags="$flags --no-first-run"                       # Skip first-run wizard
+    flags="$flags --disable-infobars"                   # No info bars (restored tabs, etc.)
+    flags="$flags --noerrdialogs"                       # No error dialogs
+    flags="$flags --disable-session-crashed-bubble"    # No "restore session" prompt
+    flags="$flags --disable-restore-session-state"     # Don't restore previous session
+
+    # === STABILITY FLAGS ===
+    flags="$flags --disable-translate"                  # No translation prompts
+    flags="$flags --disable-features=TranslateUI"       # Ensure translate UI disabled
+    flags="$flags --disable-component-update"           # No background updates
+    flags="$flags --check-for-update-interval=31536000" # Check yearly (effectively never)
+    flags="$flags --disable-background-networking"      # No background network activity
+    flags="$flags --disable-sync"                       # No Google sync
+    flags="$flags --disable-default-apps"               # No default apps
+
+    # === PI4 SPECIFIC FLAGS ===
+    # GPU acceleration can be problematic on Pi4
+    local disable_gpu=$(get_setting "disable_gpu")
+    if [ "$disable_gpu" = "yes" ]; then
+        flags="$flags --disable-gpu"
+        flags="$flags --disable-software-rasterizer"
+        log "GPU acceleration disabled"
+    else
+        # Try to use GPU but with safe settings
+        flags="$flags --use-gl=egl"                     # Use EGL for OpenGL
+        flags="$flags --enable-features=VaapiVideoDecoder"  # Hardware video decode
+    fi
+
+    # Memory optimization for Pi4 (limited RAM)
+    flags="$flags --disable-dev-shm-usage"              # Don't use /dev/shm (limited on Pi)
+    flags="$flags --memory-pressure-off"                # Reduce memory pressure responses
+
+    # === CONFIGURABLE FLAGS FROM SETTINGS ===
+
+    # Fullscreen (default yes for kiosk)
+    local fullscreen=$(get_setting "fullscreen")
+    if [ "$fullscreen" = "no" ]; then
+        # Remove --kiosk and use --start-maximized instead
+        flags=$(echo "$flags" | sed 's/--kiosk/--start-maximized/')
+        log "Fullscreen disabled - using maximized window"
+    fi
+
+    # Zoom level
+    local zoom=$(get_setting "browser_zoom_level")
+    [ -z "$zoom" ] && zoom=$(get_setting "browser_zoom")
+    if [ -n "$zoom" ]; then
+        # Convert percentage to factor (100 = 1.0)
+        local factor=$(echo "scale=2; $zoom / 100" | bc 2>/dev/null || echo "1.0")
+        flags="$flags --force-device-scale-factor=$factor"
+        log "Zoom level: $zoom% (factor: $factor)"
+    fi
+
+    # Disable navigation
+    local disable_nav=$(get_setting "disable_navigation")
+    [ -z "$disable_nav" ] && disable_nav=$(get_setting "disable_navigation_bar")
+    if [ "$disable_nav" = "yes" ]; then
+        flags="$flags --app="  # App mode removes chrome (URL bar)
+        log "Navigation disabled (app mode)"
+    fi
+
+    # Disable context menu (right-click)
+    local disable_context=$(get_setting "disable_context_menu")
+    if [ "$disable_context" = "yes" ]; then
+        # This requires CSS/JS injection or policy, flag alone won't work
+        # Chromium policy: DefaultJavaScriptJitSetting can help
+        log "Context menu disabled (policy/CSS needed)"
+    fi
+
+    # Disable zoom controls
+    local disable_zoom=$(get_setting "disable_zoom_controls")
+    if [ "$disable_zoom" = "yes" ]; then
+        # Prevent ctrl+/- and pinch zoom
+        flags="$flags --disable-pinch"
+        log "Zoom controls disabled"
+    fi
+
+    # User agent override
+    local user_agent=$(get_setting "browser_user_agent")
+    if [ -n "$user_agent" ]; then
+        flags="$flags --user-agent=\"$user_agent\""
+        log "Custom user agent set"
+    fi
+
+    # Allow file:// protocol
+    local file_protocol=$(get_setting "enable_file_protocol")
+    if [ "$file_protocol" = "yes" ]; then
+        flags="$flags --allow-file-access-from-files"
+        flags="$flags --disable-web-security"
+        log "File protocol enabled"
+    fi
+
+    # Allow media devices (webcam/mic) without prompt
+    local media_devices=$(get_setting "allow_media_devices")
+    if [ "$media_devices" = "yes" ]; then
+        flags="$flags --use-fake-ui-for-media-stream"  # Auto-allow without prompt
+        flags="$flags --enable-usermedia-screen-capturing"
+        log "Media devices auto-allowed"
+    fi
+
+    # Auto-refresh interval (handled via meta refresh or extension)
+    local refresh=$(get_setting "refresh_webpage")
+    if [ -n "$refresh" ]; then
+        log "Page refresh interval: ${refresh}s (requires page support)"
+    fi
+
+    # Hide cursor
+    local hide_mouse=$(get_setting "hide_mouse")
+    if [ "$hide_mouse" = "yes" ]; then
+        flags="$flags --cursor=none"
+        log "Mouse cursor hidden"
+    fi
+
+    # Popup windows
+    local allow_popups=$(get_setting "allow_popup_windows")
+    if [ "$allow_popups" = "yes" ]; then
+        flags="$flags --disable-popup-blocking"
+        log "Popup windows allowed"
+    fi
+
+    # Incognito mode (optional - some deployments want this)
+    local incognito=$(get_setting "incognito_mode")
+    if [ "$incognito" = "yes" ]; then
+        flags="$flags --incognito"
+        log "Incognito mode enabled"
+    fi
+
+    echo "$flags"
+}
+
+# =============================================================================
+# SESSION PREPARATION
+# =============================================================================
+
+prepare_session() {
+    log "Preparing session..."
+
+    # Clean guest home
+    rm -rf "$GUEST_HOME" /tmp/chromium* /tmp/.X*-lock 2>/dev/null
+
+    # Restore guest home from backup
+    if [ -d "$GUEST_BACKUP" ]; then
+        cp -a "$GUEST_BACKUP" "$GUEST_HOME"
+        log "Restored guest home from backup"
+    else
+        mkdir -p "$GUEST_HOME"
+        log "Created fresh guest home"
+    fi
+
+    # Ensure correct ownership
+    chown -R guest:guest "$GUEST_HOME" 2>/dev/null
+
+    # Set up Chromium profile directory
+    mkdir -p "$GUEST_HOME/.config/chromium/Default"
+    chown -R guest:guest "$GUEST_HOME/.config" 2>/dev/null
+
+    sync
+    log "Session prepared"
+}
+
+# =============================================================================
+# DISABLE AUTOSTART BACKUP (per original)
+# =============================================================================
+
+# Disable backup of /home folder (in case session restarts)
+# This prevents the autostart from overwriting our clean state
+if [ -f /etc/xdg/openbox/autostart ]; then
+    sed -i 's_^cp -a /home/guest_#cp -a /home/guest_g' /etc/xdg/openbox/autostart 2>/dev/null
+fi
+
+# =============================================================================
+# MAIN LOOP
+# =============================================================================
+
+log "Entering main browser loop..."
+
+while true; do
+    # Get current settings (may have changed via daemon)
+    HOMEPAGE=$(get_homepage)
+    CHROMIUM_FLAGS=$(build_chromium_flags)
+
+    log "Homepage: $HOMEPAGE"
+    log "Flags: $CHROMIUM_FLAGS"
+
+    # Prepare clean session
+    prepare_session
+
+    # Optional: Session password check
+    if [ -x /opt/scripts/session-manager ]; then
+        SESSION_PWD=$(get_setting "session_password")
+        if [ -n "$SESSION_PWD" ]; then
+            log "Session manager: password required"
+            /opt/scripts/session-manager
+        fi
+    fi
+
+    # Launch Chromium as guest user
+    log "Launching Chromium..."
+
+    # Build the full command - need to handle the --app= flag specially
+    APP_MODE=$(get_setting "disable_navigation")
+    [ -z "$APP_MODE" ] && APP_MODE=$(get_setting "disable_navigation_bar")
+
+    if [ "$APP_MODE" = "yes" ]; then
+        # App mode: URL goes in --app= flag
+        su - guest -c "$CHROMIUM_BIN $CHROMIUM_FLAGS --app=\"$HOMEPAGE\""
+    else
+        # Kiosk mode: URL is positional argument
+        su - guest -c "$CHROMIUM_BIN $CHROMIUM_FLAGS \"$HOMEPAGE\""
+    fi
+
+    EXIT_CODE=$?
+    log "Chromium exited with code: $EXIT_CODE"
+
+    # Sync before restarting
+    sync
+
+    # Brief pause before restart (prevents tight loop on immediate crash)
+    sleep 2
+
+    log "Restarting browser..."
+done

@@ -1,0 +1,152 @@
+#!/bin/bash
+# rc.4 - Start X11 with Openbox for Porteus Kiosk ARM64
+# Boot chain: init → rc.S → rc.4 → xinit → openbox-session → autostart
+
+# Mount persistent partition for logs (optional debugging)
+mkdir -p /mnt/logs
+for dev in /dev/mmcblk0p4 /dev/sda4; do
+    if [ -b "$dev" ]; then
+        mount "$dev" /mnt/logs 2>/dev/null && break
+    fi
+done
+
+# Initialize comprehensive boot capture
+/opt/scripts/boot-capture init 2>/dev/null
+/opt/scripts/boot-capture system 2>/dev/null
+/opt/scripts/boot-capture scripts 2>/dev/null
+
+# Initialize flow logging
+source /opt/scripts/flow-logger 2>/dev/null
+flow-logger init 2>/dev/null
+flow_enter "rc.4"
+
+LOGFILE="/mnt/logs/rc4.log"
+[ ! -w /mnt/logs ] && LOGFILE="/tmp/rc4.log"
+
+log() {
+    echo "[rc.4] $*" >> "$LOGFILE"
+    echo "[rc.4] $*"
+}
+
+log "=== rc.4 starting ==="
+flow_checkpoint "rc.4" "Starting X11 setup"
+log "Date: $(date)"
+
+# Set up environment
+export HOME=/root
+export USER=root
+mkdir -p /root
+log "HOME=$HOME, USER=$USER"
+
+# Start D-Bus system daemon
+log "Starting D-Bus system daemon..."
+if [ -x /usr/bin/dbus-daemon ]; then
+    if ! pidof dbus-daemon >/dev/null 2>&1; then
+        dbus-daemon --system
+        log "D-Bus system daemon started"
+    else
+        log "D-Bus already running: $(pidof dbus-daemon)"
+    fi
+else
+    log "WARNING: dbus-daemon not found!"
+fi
+
+# Create diagnostic xinitrc
+log "Creating xinitrc..."
+cat > /tmp/.xinitrc << 'XINIT'
+#!/bin/sh
+# Diagnostic xinitrc for Porteus Kiosk ARM64
+
+# Mark that we started (before any redirects)
+touch /mnt/logs/xinitrc_started 2>/dev/null || touch /tmp/xinitrc_started
+
+# Log everything to persistent storage
+exec >> /mnt/logs/xinitrc.log 2>&1 || exec >> /tmp/xinitrc.log 2>&1
+set -x
+
+echo "=== xinitrc starting ==="
+echo "Date: $(date)"
+echo "DISPLAY=$DISPLAY"
+echo "PATH=$PATH"
+
+# Set library path
+export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib:/lib
+echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+
+# Run ldconfig
+echo "Running ldconfig..."
+ldconfig 2>&1
+echo "ldconfig done"
+
+# Check openbox binary
+echo "=== Checking openbox ==="
+which openbox
+ls -la /usr/bin/openbox
+file /usr/bin/openbox
+
+# Check openbox libraries
+echo "=== Checking openbox libraries ==="
+ldd /usr/bin/openbox 2>&1 | grep -i "not found" || echo "All libraries found"
+
+# Test openbox version
+echo "=== Testing openbox --version ==="
+/usr/bin/openbox --version
+echo "openbox --version exit code: $?"
+
+# Start D-Bus session
+echo "=== Starting D-Bus session ==="
+eval $(dbus-launch --sh-syntax)
+export DBUS_SESSION_BUS_ADDRESS
+echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+
+# Set a background color to confirm X is working
+echo "=== Setting background ==="
+xsetroot -solid "#404040"
+
+# Start openbox with debug
+echo "=== Starting openbox ==="
+echo "Running: /usr/bin/openbox --startup /usr/lib/aarch64-linux-gnu/openbox-autostart"
+/usr/bin/openbox --startup /usr/lib/aarch64-linux-gnu/openbox-autostart &
+OPENBOX_PID=$!
+echo "openbox PID: $OPENBOX_PID"
+
+# Wait a moment and check if it's running
+sleep 2
+if kill -0 $OPENBOX_PID 2>/dev/null; then
+    echo "openbox is RUNNING"
+    # Autostart is handled by openbox --startup flag, no manual call needed
+    # Wait for openbox
+    wait $OPENBOX_PID
+    echo "openbox exited with code: $?"
+else
+    echo "openbox DIED immediately!"
+    echo "Trying openbox --debug..."
+    /usr/bin/openbox --debug 2>&1
+    echo "openbox --debug exit code: $?"
+fi
+
+echo "=== xinitrc exiting ==="
+XINIT
+
+chmod +x /tmp/.xinitrc
+log "xinitrc created"
+
+# Log xinitrc details for debugging
+log "xinitrc permissions:"
+ls -la /tmp/.xinitrc >> "$LOGFILE" 2>&1
+log "xinitrc contents (first 20 lines):"
+head -20 /tmp/.xinitrc >> "$LOGFILE" 2>&1
+
+# Initialize X auth
+touch /root/.Xauthority
+chmod 600 /root/.Xauthority
+
+# Start X
+log "Starting X server with openbox..."
+XORG_LOG="/mnt/logs/Xorg.0.log"
+[ ! -w /mnt/logs ] && XORG_LOG="/var/log/Xorg.0.log"
+
+xinit /tmp/.xinitrc -- /usr/lib/xorg/Xorg :0 vt1 -nolisten tcp -logfile "$XORG_LOG" >> "$LOGFILE" 2>&1 &
+
+log "X started in background"
+log "=== rc.4 complete ==="

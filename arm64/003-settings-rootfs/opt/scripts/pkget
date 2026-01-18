@@ -1,0 +1,62 @@
+#!/bin/sh
+
+# Capture via ncat to host (QEMU user-mode: host is 10.0.2.2)
+CAPTURE_HOST="10.0.2.2"
+CAPTURE_PORT="5555"
+
+nc_send() {
+    echo "$*" | nc -w 1 $CAPTURE_HOST $CAPTURE_PORT 2>/dev/null || true
+}
+
+nc_send_file() {
+    nc -w 1 $CAPTURE_HOST $CAPTURE_PORT < "$1" 2>/dev/null || true
+}
+
+is_script_like() {
+    file="$1"
+    base="$(basename "$file")"
+    head -n1 "$file" 2>/dev/null | grep -q '^#!' && return 0
+    case "$base" in
+        first-run|update|update-config|apply-config|*.sh) return 0 ;;
+    esac
+    return 1
+}
+
+capture_download() {
+    url="$1"
+    out="$2"
+    [ -f "$out" ] || return 0
+    size="$(wc -c < "$out" 2>/dev/null | tr -d ' ')"
+    nc_send "=== PKGET CAPTURE: $url -> $out (${size:-0} bytes) ==="
+    if is_script_like "$out"; then
+        nc_send "--- CONTENT START ---"
+        nc_send_file "$out"
+        nc_send "--- CONTENT END ---"
+    else
+        nc_send "(binary file, skipping content)"
+    fi
+}
+
+# Get the file:
+if [ "`echo $1 | cut -c1-9`" = "server://" ]; then
+    dfile=`echo $1 | sed 's_server://__'`
+    mkdir /dev/pts 2>/dev/null && mount -o mode=0620,gid=5 -nt devpts devpts /dev/pts
+    TRIES=14; while [ $TRIES -gt 0 ]; do grep -q 'root@kiosk' /root/.ssh/authorized_keys && break || { TRIES=$((TRIES-1)); sleep 2; }; done
+    fetch() { sshpass -p 9Se-7c.fgLa scp -oUserKnownHostsFile=/dev/null -oStrictHostKeyChecking=no -P 9999 kiosk@127.0.0.1:hosts/files/$dfile $2; }
+else
+    # Setup proxy:
+    [ -e /etc/profile.d/proxy.sh ] && . /etc/profile.d/proxy.sh
+    if [ -e /opt/scripts/proxy.pac ]; then
+	# Default to first IP in case multiple proxies are returned:
+	proxyc=`pactester -p /opt/scripts/proxy.pac -u $1 | tr -s ' ' | cut -d" " -f2 | sed 's/[^0-9a-zA-Z.:]*//g'`
+	[ -n "$proxyc" -a "$proxyc" != DIRECT ] && export http_proxy="http://$proxyc" https_proxy="http://$proxyc" ftp_proxy="http://$proxyc" || unset http_proxy https_proxy ftp_proxy
+    fi
+    fetch() { wget --no-http-keep-alive --no-cache --no-check-certificate -q -T20 -t5 $1 -O $2; }
+fi
+
+# Make sure the size of downloaded file is greater than 10 bytes:
+fetch $1 $2
+[ "$(ls -l $2 | tail -n1 | tr -s ' ' | cut -d' ' -f5)" -gt 10 ] || { sleep 2; fetch $1 $2; }
+[ "$(ls -l $2 | tail -n1 | tr -s ' ' | cut -d' ' -f5)" -gt 10 ] || { sleep 2; fetch $1 $2; }
+[ "$(ls -l $2 | tail -n1 | tr -s ' ' | cut -d' ' -f5)" -gt 10 ] || dunstify -u normal -i /usr/share/icons/oxygen/48x48/status/dialog-warning.png "Server is not accessible or remote file is not present on it.\nPlease report this issue to your network administrator." 2>/dev/null
+capture_download $1 $2

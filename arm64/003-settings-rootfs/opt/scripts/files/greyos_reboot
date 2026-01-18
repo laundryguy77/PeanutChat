@@ -1,0 +1,22 @@
+#!/bin/sh
+#
+# Setup scheduled reboot.
+# Author: T.Jokiel <http://porteus-kiosk.org>
+
+# Define time first:
+hour=23
+minute=59
+min=$(echo $(($minute-`date +%M | sed s/^0//g`)))
+hr=$(echo $(echo $(($hour-`date +%H | sed s/^0//g`)))*60)
+mins_total=$(echo $(($min+$hr)))
+
+# Sleep 6 min to avoid multiple 'sleep' processes:
+sleep 6m
+
+# Wait till day ends:
+mins_current=$(echo $(($mins_total-6)))
+sleep "$mins_current"m 2>/dev/null
+
+# Sleep till 3.00 AM and then reboot:
+sleep 3h
+init 6

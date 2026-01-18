@@ -1,0 +1,3 @@
+# Place commands to run after network initialization here.
+# Example:
+# ntpdate pool.ntp.org

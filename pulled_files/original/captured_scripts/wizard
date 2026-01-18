@@ -1,0 +1,299 @@
+#!/bin/bash
+#
+#
+
+## ====================================================================
+## variables
+## ====================================================================
+
+## We need to export these variables so they are available to gtkdialog
+ICONS=/usr/share/pixmaps
+export PCID=`grep ^ID: /etc/version | cut -d" " -f2`
+deplvl='$3Cur1ty$'
+## Create temporary working directory
+rm -rf /tmp/kwiz.* 2>/dev/null
+export TMPDIR=/tmp/kwiz.$$
+mkdir -p $TMPDIR
+sleep 5
+CID=0
+DRIVEKEY=1
+touch /tmp/kwiz.$$/configuration.id
+
+## ====================================================================
+## Main dialog
+## ====================================================================
+
+################# Setup required files
+export IMAGEONE="/usr/share/icons/oxygen/22x22/actions/gtk-no.png"
+export IMAGETWO="/usr/share/icons/oxygen/22x22/actions/gtk-ok.png"
+export IMGPASS=$TMPDIR/img.png
+cp -L $IMAGEONE $TMPDIR/img.png
+
+## Set some text files that should exist before the main
+## gtkdialog is rendered
+echo 0 > $TMPDIR/.knetPage
+lsblk -o NAME,TYPE,MODEL,SIZE | egrep -v 'NAME|loop|part|rom' | tr -s ' ' | sed -e 's/ /_/g' -e 's/_/|/1' -e 's/_/|/1' -e 's/\(.*\)_/\1|/' > $TMPDIR/block.txt
+echo 22 > $TMPDIR/sshport.txt
+
+## Setup browser:
+if [ -e /mnt/ISO/xzm/002-chrome.xzm ]; then
+    mkdir -p /dev/shm && chmod 1777 /dev/shm
+    ln -sf /usr/bin/chrome /usr/bin/firefox
+    chflag="-"
+    ln -sf /usr/share/pixmaps/chrome-48.png /usr/share/pixmaps/browser-48.png
+else
+    ln -sf /usr/share/pixmaps/firefox-48.png /usr/share/pixmaps/browser-48.png
+fi
+
+# Launch wizard:
+# Launch wizard:
+WIZARD_MAIN='
+<window title="TuxOS Wizard" icon-name="kiosk" resizable="false" width-request="580" height-request="480" decorated="true">
+<vbox>
+
+################## PAGE 0 SERVER CHOICE
+<vbox margin="10">
+        <hseparator></hseparator>
+
+	<text use-markup="true" yalign="1">
+		<label>"<span weight='"'bold'"' size='"'x-large'"'>TuxOS Wizard - Authoization Page</span>"</label>
+	</text>
+	<hseparator></hseparator>
+
+	<text><label>""</label></text>
+	<text><label>""</label></text>
+	<text>
+		<label>Please enter the password below to proceed with the setup of this device.</label>
+	</text>
+
+	<text><label>""</label></text>
+	<text><label>""</label></text>
+
+
+	<hseparator></hseparator>
+
+        <hbox>
+	<text use-markup="true" yalign="1">
+		<label>"<span weight='"'normal'"'>Enter Password:</span>"</label>
+	</text>
+	    <entry sensitive="true">
+	    	<variable>CID</variable>
+	    	<default>000000000</default>
+	    	<action signal="changed">echo $CID > '$TMPDIR'/configuration.id</action>
+	    </entry>
+	</hbox>
+        <text><label>""</label></text>
+       
+        <text><label>""</label></text>
+
+	<hbox>
+	<button tooltip-text="Install TuxOS">
+		<label>Install OS</label>
+		<input file>/usr/share/icons/oxygen/16x16/devices/drive-harddisk.png</input>
+		<action condition="command_is_true( [ ! -f '$TMPDIR'/configuration.id ] && echo true )">gtk_warning "Missing parameter" "You must provide configuration ID." 400</action>
+		<action condition="command_is_true( [ ! -f '$TMPDIR'/configuration.id ] && echo true )" function="break">break</action>
+		<action function="exit">finished</action>
+	</button>
+	</hbox>
+</vbox>
+
+</vbox>
+</window>'
+
+if curl cullerdigitalmedia.com/files/key.txt >> $TMPDIR/drivekey.txt; then
+	continue
+else
+	echo P@ss3264 > $TMPDIR/drivekey.txt
+fi
+
+touch /tmp/clients.txt
+if curl cullerdigitalmedia.com/files/clients.txt >> "/tmp/clients.txt"; then
+	continue
+else
+	echo laundromat >> /tmp/clients.txt
+	
+fi
+
+DRIVEKEY=`cat $TMPDIR/drivekey.txt`
+
+while ([ "$CID" != "$DRIVEKEY" ]); do
+    rm /tmp/CLIENT.txt
+    touch "$TMPDIR"/CLIENT.txt
+    echo "client" > /tmp/CLIENT.txt
+    rm "$TMPDIR"/configuration.id
+    touch "$TMPDIR"/configuration.id
+    echo "$WIZARD_MAIN" | sed '/^##/d' | gtkdialog -i /opt/scripts/files/wizard/wizard-functions -s -c > $TMPDIR/output
+
+    # Check conditions:
+    CLIENT=`cat /tmp/CLIENT.txt`
+    CID=`cat $TMPDIR/configuration.id`
+
+    if ([ "$CID" = "$DRIVEKEY" ]); then
+	export DIALOG='
+		<window title="TuxOS Wizard" resizable="false" width-request="580" height-request="500" decorated="true">
+			<vbox>
+    			<hbox>
+					<text><label>Device Type:</label></text>
+					<comboboxentry>
+						<label>Select Device Type:</label>
+						<default>Device</default>
+						<variable>DEVTYPE</variable>
+						<input>cat /tmp/dev.txt</input>
+						<sensitive>true</sensitive>
+					</comboboxentry>
+				</hbox>
+	
+				<hbox>
+					<text><label>Facility</label></text>
+					<comboboxentry>
+						<label>Select Facility:</label>
+						<default>Facility</default>
+						<variable>FACNAM</variable>
+						<input>cat /tmp/fac.txt</input>
+						<sensitive>true</sensitive>
+					</comboboxentry>
+				</hbox>
+				<hbox>
+					<text><label>Device Number</label></text>
+					<comboboxentry>
+						<label>Select Device Number:</label>
+						<default>#</default>
+						<variable>DEVNUM</variable>
+						<input>cat /tmp/num.txt</input>
+						<sensitive>true</sensitive>
+					</comboboxentry>
+				</hbox>
+
+
+				<hseparator></hseparator>
+				<text><label>""</label></text>
+				<text><label>""</label></text>
+				<hseparator></hseparator>
+				<text><label>""</label></text>
+				<text xalign="0" width-request="540" wrap="true" use-markup="true"><label>"Please choose the target device (must have at least <span weight='"'bold'"' color='"'red'"'>1 GB</span> size) to which you will be installing the kiosk system."</label></text>
+				<text><label>""</label></text>
+				<hseparator></hseparator>
+				<table>
+						<variable>tblTarget</variable>
+						<width>500</width>
+						<label>"NAME               |TYPE           |MODEL                                              |SIZE"</label>
+						<height>130</height>
+						<input file>'$TMPDIR'/block.txt</input>
+						<action>echo burn_dev=$tblTarget >> /tmp/config</action>
+				</table>
+
+
+
+
+				<button>
+						<label>Install OS</label>
+						<variable>butBurn</variable>
+						<input file>/usr/share/icons/oxygen/16x16/devices/drive-harddisk.png</input>
+						<action>echo "burn_dev=$tblTarget" >> /tmp/config</action>
+						<action function="exit">finished</action>
+				</button>
+
+
+			</vbox>
+		</window>
+		'
+## READ IN THE VALUES TO POPULATE THE DROP DOWN MENUS
+	touch /tmp/fac.txt
+	touch /tmp/dev.txt
+	touch /tmp/num.txt
+        curl cullerdigitalmedia.com/files/num.txt >> "/tmp/num.txt"
+        curl cullerdigitalmedia.com/files/dev.txt >> "/tmp/dev.txt"
+        curl cullerdigitalmedia.com/files/fac.txt >> "/tmp/fac.txt"
+        BASEURL='http://cullerdigitalmedia.com/'
+
+	I=$IFS; IFS=""
+	for STATEMENTS in  $(gtkdialog --program DIALOG); do
+		eval $STATEMENTS
+	done
+	IFS=$I
+
+	
+
+
+	if [ $DEVTYPE = "Education" ]; then
+		TMPCONFIG="$BASEURL""kc/"
+		FINCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')"_ed.txt"
+	fi
+	if [ "$DEVTYPE" = "Kiosk" ]; then
+		TMPCONFIG="$BASEURL""kc/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"_ks"
+		FINCONFIG=$TMPCONFIG$DEVNUM".txt"
+	fi
+
+	if [ $DEVTYPE = "ActivityPro" ]; then
+		echo $FACENAME
+		TMPCONFIG="$BASEURL""activitypro/"
+		FINCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')".txt"
+	fi
+
+	if [ $DEVTYPE = "Medcart" ]; then
+		TMPCONFIG="$BASEURL""kc/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"_mc"
+		FINCONFIG=$TMPCONFIG$DEVNUM".txt"
+	fi
+	
+	if [ $DEVTYPE = "Treatment" ]; then
+		TMPCONFIG="$BASEURL""kc/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"_tc"
+		FINCONFIG=$TMPCONFIG$DEVNUM".txt"
+	fi
+	
+	if [ $DEVTYPE = "NurseStation" ]; then
+		TMPCONFIG="$BASEURL""kc/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"_ns"
+		FINCONFIG=$TMPCONFIG$DEVNUM".txt"
+	fi
+	
+	if [ $DEVTYPE = "Bedboard" ]; then
+		TMPCONFIG="$BASEURL""kc/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"_stats"
+		FINCONFIG=$TMPCONFIG".txt"
+	fi
+	
+	if [ "$DEVTYPE" = "Resident Room" ]; then
+		TMPCONFIG="$BASEURL""kc/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"_rr"
+		FINCONFIG=$TMPCONFIG$DEVNUM".txt"
+	fi
+
+	if [ "$DEVTYPE" = "Digital Signage" ]; then
+		echo $FACENAME
+		TMPCONFIG="$BASEURL""signage/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"/"
+		TMPCONFIG=$TMPCONFIG$(echo $FACNAM | tr '[:upper:]' '[:lower:]')
+		TMPCONFIG=$TMPCONFIG"_ds"
+		FINCONFIG=$TMPCONFIG$DEVNUM".txt"
+	fi
+	echo $FINCONFIG
+
+
+	echo burn_dev="$tblTarget" >> /tmp/config
+	echo kiosk_config="$FINCONFIG" >> /tmp/config
+else
+    echo "failed"
+fi
+done 

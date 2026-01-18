@@ -1,0 +1,4 @@
+# Place commands to run during GUI initialization here.
+# These are sourced by rc.4 before starting X.
+# Example:
+# export DISPLAY=:0

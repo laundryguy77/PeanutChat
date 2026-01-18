@@ -1,0 +1,56 @@
+#!/bin/busybox sh
+#
+# Porteus Kiosk ARM64 - Simple Init (PID 1)
+# This script replaces systemd as the init process
+#
+
+echo "[init] Starting PID 1 init script..."
+
+# Remount root read-write (AUFS union)
+echo "[init] Remounting root rw..."
+/bin/mount -o remount,rw / 2>/dev/null || echo "[init] remount failed (may be OK)"
+
+# Mount essential filesystems if not already mounted
+echo "[init] Mounting filesystems..."
+/bin/mountpoint -q /proc 2>/dev/null || /bin/mount -t proc proc /proc
+/bin/mountpoint -q /sys 2>/dev/null || /bin/mount -t sysfs sysfs /sys
+/bin/mountpoint -q /dev 2>/dev/null || /bin/mount -t devtmpfs devtmpfs /dev
+
+/bin/mkdir -p /dev/pts /dev/shm /run 2>/dev/null
+/bin/mountpoint -q /dev/pts 2>/dev/null || /bin/mount -t devpts devpts /dev/pts
+/bin/mountpoint -q /dev/shm 2>/dev/null || /bin/mount -t tmpfs tmpfs /dev/shm
+/bin/mountpoint -q /run 2>/dev/null || /bin/mount -t tmpfs tmpfs /run
+
+# Set PATH
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+# Set hostname (using echo if hostname command unavailable)
+echo "kiosk" > /proc/sys/kernel/hostname 2>/dev/null || echo "[init] hostname set failed"
+
+echo "[init] Filesystem setup complete"
+
+# Run system initialization
+echo "[init] Checking for rc.S..."
+if [ -x /etc/rc.d/rc.S ]; then
+    echo "[init] Running rc.S..."
+    /etc/rc.d/rc.S || echo "[init] rc.S exited with error"
+else
+    echo "[init] WARNING: /etc/rc.d/rc.S not found or not executable"
+fi
+
+# Run graphical startup
+echo "[init] Checking for rc.4..."
+if [ -x /etc/rc.d/rc.4 ]; then
+    echo "[init] Running rc.4..."
+    /etc/rc.d/rc.4 || echo "[init] rc.4 exited with error"
+else
+    echo "[init] WARNING: /etc/rc.d/rc.4 not found or not executable"
+fi
+
+# PID 1 must never exit - wait forever
+echo "[init] Init complete, entering wait loop (PID 1 will not exit)..."
+while true; do
+    # Reap zombie processes (init's job)
+    wait 2>/dev/null
+    /bin/sleep 1
+done

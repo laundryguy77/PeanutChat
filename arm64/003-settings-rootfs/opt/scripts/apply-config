@@ -1,0 +1,74 @@
+#!/bin/bash
+# =============================================================================
+# apply-config - Apply configuration parameters from lcon
+# =============================================================================
+# Called by daemon.sh when config changes, and by autostart at boot.
+# Sources the config file and runs all parameter handlers in order.
+#
+# Usage: apply-config [config_file]
+#        Default config_file: /opt/scripts/files/lcon
+#
+# Adding new parameters:
+#   1. Edit the appropriate handler in /opt/scripts/param-handlers/
+#   2. Add: if [ -n "$param_name" ]; then do_something; fi
+#   3. Test: /opt/scripts/apply-config
+# =============================================================================
+
+# Configuration
+CONFIG="${1:-/opt/scripts/files/lcon}"
+HANDLER_DIR="/opt/scripts/param-handlers"
+LOG_FILE="/tmp/apply-config.log"
+
+# Logging function
+log() {
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] $*" >> "$LOG_FILE"
+}
+
+log "=== apply-config started ==="
+log "Config file: $CONFIG"
+
+# Verify config file exists
+if [ ! -f "$CONFIG" ]; then
+    log "ERROR: Config file not found: $CONFIG"
+    exit 1
+fi
+
+# Source config file to get all parameters as shell variables
+# This makes all key=value pairs available as $key
+log "Sourcing config file..."
+set -a  # Export all variables
+source "$CONFIG"
+set +a
+
+# Export additional variables for handler scripts
+export CONFIG
+export DISPLAY="${DISPLAY:-:0}"
+export LOG_FILE
+
+# Verify handler directory exists
+if [ ! -d "$HANDLER_DIR" ]; then
+    log "WARNING: Handler directory not found: $HANDLER_DIR"
+    log "Creating handler directory..."
+    mkdir -p "$HANDLER_DIR"
+fi
+
+# Run all handlers in order (numeric prefix determines order)
+# 00-network.sh runs first, 90-custom.sh runs last
+handler_count=0
+for handler in "$HANDLER_DIR"/*.sh; do
+    # Skip if no handlers found (glob returns literal pattern)
+    [ -e "$handler" ] || continue
+
+    if [ -x "$handler" ]; then
+        log "Running handler: $(basename "$handler")"
+        "$handler" 2>> "$LOG_FILE"
+        handler_count=$((handler_count + 1))
+    else
+        log "WARNING: Handler not executable: $handler"
+    fi
+done
+
+log "Executed $handler_count handlers"
+log "=== apply-config completed ==="

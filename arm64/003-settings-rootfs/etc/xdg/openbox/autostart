@@ -1,0 +1,178 @@
+#!/bin/sh
+#
+# TuxOS ARM64 Desktop Session Init Script
+# With persistent logging to /mnt/logs/
+#
+
+# CRITICAL: Log EVERYTHING to persistent storage
+LOG="/mnt/logs/autostart.log"
+mkdir -p /mnt/logs 2>/dev/null
+exec >> "$LOG" 2>&1
+set -x
+
+echo "=========================================="
+echo "=== AUTOSTART STARTING $(date) ==="
+echo "=========================================="
+echo "PID: $$"
+echo "PWD: $(pwd)"
+echo "USER: $(whoami)"
+echo "DISPLAY: $DISPLAY"
+
+# Setup variables
+[ -f /etc/profile.d/variables.sh ] && . /etc/profile.d/variables.sh
+
+log() {
+    echo "[$(date '+%H:%M:%S')] $*"
+}
+
+log "=== INPUT SETUP ==="
+setxkbmap -layout us 2>/dev/null || log "setxkbmap failed"
+xmodmap -e "pointer = 1 2 32 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 3" 2>/dev/null
+
+log "=== SCREEN SETUP ==="
+for x in /sys/class/backlight/*; do
+    [ -d "$x" ] && echo "$(cat "$x/max_brightness" 2>/dev/null)" > "$x/brightness" 2>/dev/null
+done
+
+log "=== DISPLAY MANAGER SETUP ==="
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    eval $(dbus-launch --sh-syntax 2>/dev/null)
+    export DBUS_SESSION_BUS_ADDRESS
+    log "D-Bus started: $DBUS_SESSION_BUS_ADDRESS"
+fi
+
+# Start dunst notification daemon
+if command -v dunst >/dev/null 2>&1; then
+    killall dunst 2>/dev/null
+    dunst &
+    log "dunst started"
+    sleep 0.5
+fi
+
+xset -dpms 2>/dev/null
+xset s 0 2>/dev/null
+xset s noblank 2>/dev/null
+
+log "=== BOOT CAPTURE (background) ==="
+# Run boot-capture in background so it doesn't block wizard startup
+/opt/scripts/boot-capture init 2>/dev/null
+/opt/scripts/boot-capture system 2>/dev/null &
+/opt/scripts/boot-capture display 2>/dev/null &
+# Skip 'scripts' capture - it's 100KB+ and blocks startup
+
+log "=== FIRST RUN CHECK ==="
+# Original x86 method: just check if first-run exists and run it
+# The wizard scripts handle their own state
+if [ -e /opt/scripts/first-run ]; then
+    log "Running first-run wizard..."
+    /opt/scripts/first-run
+    log "first-run exited with code: $?"
+
+    if [ -f /tmp/config ]; then
+        log "Wizard created /tmp/config:"
+        cat /tmp/config
+    fi
+else
+    log "No first-run script found (normal for configured systems)"
+fi
+
+log "=== WAITING FOR NETWORK ==="
+GTW=0
+SLEEP=120
+route -n 2>/dev/null | grep -q -w ppp0 && GTW=1
+
+while [ "$GTW" -lt 1 ] && [ "$SLEEP" -gt 0 ]; do
+    GTW=$(route -n 2>/dev/null | grep -c " UG " | tr -d '[:space:]')
+    GTW=${GTW:-0}
+    if [ "$GTW" -lt 1 ]; then
+        if [ "$SLEEP" = "60" ]; then
+            log "60s elapsed, restarting network..."
+            [ -x /etc/rc.d/rc.inet1 ] && /etc/rc.d/rc.inet1
+        fi
+        sleep 1
+        SLEEP=$((SLEEP - 1))
+    fi
+done
+
+if [ "$GTW" -lt 1 ]; then
+    log "WARNING: No gateway after 120s"
+else
+    log "Network connected (gateway found)"
+fi
+
+log "=== RUNNING BOOT CONFIG CHECK ==="
+BOOT_CONFIG="/opt/scripts/arm64-boot-config.sh"
+
+if [ -x "$BOOT_CONFIG" ]; then
+    log "Executing: $BOOT_CONFIG"
+    "$BOOT_CONFIG"
+    BOOT_EXIT=$?
+    log "arm64-boot-config.sh exited with code: $BOOT_EXIT"
+    
+    if [ $BOOT_EXIT -ne 0 ]; then
+        log "ERROR: Boot config failed"
+        if [ -f /tmp/boot-config-failed ]; then
+            log "Failure reason: $(cat /tmp/boot-config-failed)"
+        fi
+    fi
+else
+    log "ERROR: $BOOT_CONFIG not found or not executable"
+    ls -la "$BOOT_CONFIG" 2>&1
+fi
+
+log "=== LAUNCHING APPLICATION ==="
+LCON="/opt/scripts/files/lcon"
+HOMEPAGE="about:blank"
+
+if [ -f "$LCON" ]; then
+    log "Reading config from $LCON"
+    _hp=$(grep "^homepage=" "$LCON" 2>/dev/null | cut -d= -f2-)
+    [ -n "$_hp" ] && HOMEPAGE="$_hp"
+else
+    log "No local config file"
+fi
+
+log "Homepage: $HOMEPAGE"
+
+# Detect browser
+BROWSER=""
+if [ -x /opt/google/chrome/chrome ]; then
+    BROWSER="chrome"
+elif command -v chromium >/dev/null 2>&1; then
+    BROWSER="chromium"
+elif command -v chromium-browser >/dev/null 2>&1; then
+    BROWSER="chromium-browser"
+elif command -v firefox >/dev/null 2>&1; then
+    BROWSER="firefox"
+fi
+
+log "Browser detected: $BROWSER"
+
+if [ -x /opt/scripts/gui-app ]; then
+    log "Launching gui-app..."
+    /opt/scripts/gui-app &
+else
+    log "Launching browser directly..."
+    case "$BROWSER" in
+        chrome)
+            /opt/google/chrome/chrome --kiosk --no-first-run --disable-translate --disable-infobars "$HOMEPAGE" &
+            ;;
+        chromium|chromium-browser)
+            $BROWSER --kiosk --no-first-run --disable-translate --disable-infobars "$HOMEPAGE" &
+            ;;
+        firefox)
+            firefox --kiosk "$HOMEPAGE" &
+            ;;
+        *)
+            log "WARNING: No browser found, launching xterm"
+            xterm &
+            ;;
+    esac
+fi
+
+log "=== AUTOSTART COMPLETE ==="
+
+# Keep session alive
+while true; do
+    sleep 60
+done

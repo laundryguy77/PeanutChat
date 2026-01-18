@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# Shutdown/logout helper for kiosk.
+# Author: T.Jokiel <http://porteus-kiosk.org>
+
+# Kill previous instances:
+kill -9 `ps | grep EXIT_MENU | grep -v grep | tr -s ' ' | sed -e 's/^ //g' | cut -d' ' -f1 | tr '\n' ' '` 2>/dev/null
+
+# Offer exit options:
+export EXIT_MENU='
+<window decorated="true" title="      System" window-position="1" icon-name="kiosk" width-request="200">
+<vbox>
+'"`if [ -e /opt/scripts/files/shutdown-menu/shutdown ]; then
+    echo '<button image-position="2" tooltip-text="Turn off computer">
+    <input file icon="system-shutdown"></input>
+    <label>Shutdown</label>
+    <action>init 0</action>
+</button>'
+fi`"'
+
+'"`if [ -e /opt/scripts/files/shutdown-menu/reboot ]; then
+    echo '<button image-position="2" tooltip-text="Restart computer">
+    <input file icon="system-reboot"></input>
+    <label>Reboot</label>
+    <action>init 6</action>
+</button>'
+fi`"'
+
+'"`if [ -e /opt/scripts/files/shutdown-menu/sleep ]; then
+    echo '<button image-position="2" tooltip-text="Suspend, standby or freeze the PC">
+    <input file icon="system-suspend"></input>
+    <label>Sleep</label>
+    <action>echo $(cat /sys/power/state | tr " " "\n" | sort | tail -n1) > /sys/power/state</action>
+    <action function="exit">finished</action>
+</button>'
+fi`"'
+
+'"`if [ -e /opt/scripts/files/shutdown-menu/restart-session ]; then
+    echo '<button image-position="2" tooltip-text="Restart X server">
+    <input file icon="system-log-out"></input>
+    <label>Restart session</label>
+    <action>openbox --exit</action>
+</button>'
+fi`"'
+
+'"`if [ -e /opt/scripts/files/shutdown-menu/lock ]; then
+    echo '<button image-position="2" tooltip-text="Lock the session">
+    <input file icon="system-lock-screen"></input>
+    <label>Lock session</label>
+    <action>su - guest -c "xlock +resetsaver +description -timeelapsed -bg black -fg white -mode space -delay 100000 -count 10 &"</action>
+    <action>kill -9 $(ps | grep EXIT_MENU | grep -v grep | tr -s " " | sed -e "s/^ //g" | cut -d" " -f1 | tr "\n" " ")</action>
+</button>'
+fi`"'
+
+<button image-position="2" tooltip-text="Exit menu">
+    <input file icon="dialog-cancel"></input>
+    <label>Cancel</label>
+    <action function="exit">finished</action>
+</button>
+
+</vbox>
+</window>
+'
+gtkdialog --program=EXIT_MENU

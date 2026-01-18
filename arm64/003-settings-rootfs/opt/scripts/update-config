@@ -1,0 +1,302 @@
+#!/bin/sh
+# TuxOS update-config script - ARM64 port
+# Extracted from x86 shc binary, adapted for ARM64/Debian
+
+umd5c=/tmp/log/md5c
+config="`grep ^kiosk_config= $umd5c 2>/dev/null | head -n1 | cut -d= -f2-`"
+[ "$config" ] || { echo "Error: kiosk_config not found in $umd5c"; exit 1; }
+spsize=`grep ^system_partition_size= $umd5c 2>/dev/null | head -n1 | cut -d= -f2-`; [ "$spsize" ] || spsize=900
+PTH=/usr/share/icons/oxygen/22x22
+pth=/mnt/ISO
+bimg=/opt/scripts/files/GRUB
+wget="wget --no-http-keep-alive --no-cache --no-check-certificate"
+if grep -q 'ID: NOT_AVAILABLE' /etc/version; then
+# ARM64: Use ip link instead of ifconfig HWaddr (Debian doesn't show HWaddr)
+fmac=$(ip link | grep -E 'link/ether' | head -n1 | awk '{print $2}' | tr ':' '-' | tr '[:lower:]' '[:upper:]')
+fID="$(echo `echo $fmac | cut -c1,3,5,7,9,11,13``echo $fmac | rev | cut -c1,3,5,7,9,11,13`)"
+sed -i 's/NOT_AVAILABLE/'$fID'/g' /etc/version 2>/dev/null
+fi
+pcid=`grep ^ID: /etc/version | cut -d' ' -f2`
+if [ -e /tmp/log/md5hash ]; then
+cleanup() { rm -rf /mnt/VER /tmp/pers* /tmp/config /tmp/md5sum $umd5c /tmp/log/md5sum /tmp/log/md5ver /opt/scripts/update-config; }
+else
+cleanup() { cd /; rm -rf $pth /mnt/VER /tmp/pers* /tmp/config /tmp/md5sum $umd5c /tmp/log /opt/scripts/update-config; }
+fi
+get_config() {
+if [ "`echo $config | cut -c1-9`" = "server://" ]; then
+mkdir /dev/pts 2>/dev/null && mount -o mode=0620,gid=5 -nt devpts devpts /dev/pts; /etc/rc.d/rc.stunnel
+TRIES=14; sconf=`echo $config | sed 's_server://__'`
+fetch_config() { sshpass -p 9sE-7C.FGlA scp -oUserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -P 9999 kiosk2@127.0.0.1:hosts/$sconf /tmp/conf; echo "4B4#Ras.f" | openssl aes-256-cbc -md MD5 -d -a -in /tmp/conf -out /tmp/config -pass stdin 2>/dev/null; fromdos /tmp/config; fromdos /tmp/config; fromdos /tmp/config; tr -dc "[:alnum:][:space:][:punct:][®][ąśł]" < /tmp/config > /tmp/conf; sed -i 's/^ .*//' /tmp/conf; mv /tmp/conf /tmp/config; }
+while [ $TRIES -gt 0 ]; do fetch_config; grep -q ^kiosk_config= /tmp/config && break || { TRIES=$((TRIES-1)); sleep 2; }; done
+else
+if [ -e /opt/scripts/proxy.pac ]; then
+proxyc=`pactester -p /opt/scripts/proxy.pac -u $config | tr -s ' ' | cut -d" " -f2 | sed 's/[^0-9a-zA-Z.:]*//g'`
+[ -n "$proxyc" -a "$proxyc" != DIRECT ] && export http_proxy="http://$proxyc" https_proxy="http://$proxyc" ftp_proxy="http://$proxyc" || unset http_proxy https_proxy ftp_proxy
+fi
+[ "`echo $config | cut -c1-6`" = "ftp://" ] || config="$config?kiosk=$pcid"
+sleep 1; TRIES=14
+while [ $TRIES -gt 0 ]; do $wget -q -T20 -t1 --spider $config && break || { TRIES=$((TRIES-1)); sleep 2; }; done
+fetch_config() { $wget -T20 -t3 -q -O /tmp/config $config; fromdos /tmp/config; fromdos /tmp/config; fromdos /tmp/config; tr -dc "[:alnum:][:space:][:punct:][®][ąśł]" < /tmp/config > /tmp/conf; sed -i 's/^ .*//' /tmp/conf; mv /tmp/conf /tmp/config; }
+fetch_config
+grep -q ^kiosk_config= /tmp/config 2>/dev/null || fetch_config
+grep -q ^kiosk_config= /tmp/config 2>/dev/null || fetch_config
+fi
+. /etc/profile.d/proxy.sh
+}
+get_config
+if ! grep -q '=' /tmp/config 2>/dev/null; then
+dunstify -u normal -i /usr/share/icons/oxygen/48x48/status/dialog-warning.png "Server is not accessible or remote config is not present on it.\nSystem configuration will not be updated - please report this issue to your network administrator." 2>/dev/null
+cleanup; exit
+elif ! grep -q ^kiosk_config= /tmp/config 2>/dev/null; then
+dunstify -u normal -i /usr/share/icons/oxygen/48x48/status/dialog-warning.png "Remote config was not parsed correctly (must be encoded with ANSI or UTF-8) or 'kiosk_config=' parameter is not present in it.\nSystem configuration will not be updated - please report this issue to your network administrator." 2>/dev/null
+cleanup; exit
+fi
+if grep -q '^\[\[.*GLOBAL.*\]\]' /tmp/config; then
+sed -n '/^\[\[.*'$pcid'.*\]\]/,/^$/p' /tmp/config | egrep -v '^\[|^\#|^$' > /tmp/conf
+sed -e '/^\[\[.*GLOBAL.*\]\]/d' -e '/^\[\[/q' /tmp/config | egrep -v '^\[|^\#|^$' >> /tmp/conf
+mv /tmp/conf /tmp/config
+elif grep -q '^IncludeConfig' /tmp/config; then
+config=`grep '^IncludeConfig' /tmp/config | head -n1 | cut -d" " -f2`
+mv /tmp/config /tmp/config-main
+get_config
+cat /tmp/config >> /tmp/config-main
+mv /tmp/config-main /tmp/config
+fi
+mdl=`grep ^md5conf= $umd5c 2>/dev/null | head -n1 | cut -d= -f2-`; mdr=`md5sum /tmp/config`
+[ "$mdl" = "$mdr" ] && { cleanup; exit; }
+dunstify -u normal -i $PTH/status/dialog-information.png "Performing system reconfiguration - please do not turn off the PC." 2>/dev/null
+echo -e "\n\n" >> /tmp/config
+egrep -q '^automatic_updates=|^trial_au=' /tmp/config || egrep '^automatic_updates=|^trial_au=' $umd5c 2>/dev/null >> /tmp/config
+grep -q '^system_partition_size=' /tmp/config || echo "system_partition_size=$spsize" >> /tmp/config
+grep ^burn_dev= $umd5c 2>/dev/null >> /tmp/config
+echo "md5conf=$mdr" >> /tmp/config
+value() { grep "^$1=" /tmp/config | head -n1 | cut -d= -f2- | sed 's/[[:blank:]]*$//'; }
+if [ "`value automatic_updates`" = yes ]; then
+channel=`value channel`; [ "$channel" ] && upxzm="xzm/$channel" || upxzm=xzm
+URLP=http://cullerdigitalmedia.com/peanutos
+profile_au=`value profile`; [ "$profile_au" ] && { prof=:$pcid; profile=$profile_au; } || profile=$pcid
+else
+unset profile; prof=$pcid
+URLP=http://cullerdigitalmedia.com/peanutos
+fi
+burn=`value burn_dev`
+[ "$burn" = sr0 ] && { dunstify -u critical -i $PTH/status/dialog-warning.png "Writing to optical media is not supported - skipping system reconfiguration ..."; cleanup; exit; }
+[ `echo $burn | cut -c1-3` = mmc -o `echo $burn | cut -c1-4` = nvme ] && prt=p4 || prt=4; trg="$burn""$prt"
+if [ -b /dev/$trg ]; then
+pers=/dev/$trg
+umount $pers; umount $pers; mkdir -p /tmp/pers; mount $pers /tmp/pers; cp -a /tmp/pers /tmp/perst; umount $pers
+fi
+devboot=`lsblk -o NAME,TYPE,MODEL,SIZE /dev/$burn 2>&1 | egrep -v "NAME|loop|part|rom" | tr -s " " | tr " " "-"`
+copyISO() { mkdir -p /mnt/$burn; mount /dev/$burn /mnt/$burn 2>&1 && cp -a /mnt/$burn $pth 2>&1; }
+copyISO || { umount /mnt/$burn; rm -r $pth; sync; sleep 2; copyISO || { umount /mnt/$burn; rm -r $pth; sync; sleep 2; copyError=`copyISO | tr ' ' '_'` || skipburn=yes; }; }
+umount /mnt/$burn; rmdir /mnt/$burn
+if [ "$skipburn" = yes ]; then
+ramm=`free -m | grep Mem: | tr -s ' ' | cut -d' ' -f2`; vfss=`df -h | grep aufs | tr -s ' ' | cut -d' ' -f5 | sed 's/%//'`
+devburn=`lsblk -o NAME,TYPE,MODEL,SIZE /dev/$burn 2>&1 | egrep -v "NAME|loop|part|rom" | tr -s " " | tr " " "-"`; dmesgl=`dmesg | tail -n30 | sed 's/ /_/g' | tr '\n' ';'`
+# ARM64: Removed tracking call
+# $wget -q -T20 -t2 $URLP/failed-read-rec?$profile$prof-error:$copyError-ram:$ramm-vfs:$vfss-bdev=$burn-bootdev:$devboot-burndev:$devburn-dmesg:$dmesgl
+dunstify -u normal -i /usr/share/icons/oxygen/32x32/status/dialog-warning.png "Troubles accessing booting device or reading from it - skipping reconfiguration ..."
+cleanup; exit
+fi
+browser=`value browser`
+if [ "$browser" ]; then
+brxzm=002-$browser.xzm
+if [ $browser = chrome ]; then
+rm -f $pth/xzm/002-firefox.xzm
+else
+rm -f $pth/xzm/002-chrome.xzm
+fi
+fi
+xzm="`value additional_components` $brxzm"
+for y in `ls -1 $pth/xzm | grep ^[0-9][0-9]-.*.xzm$`; do echo $xzm | grep -q $y || rm -f $pth/xzm/$y; done
+for x in $xzm; do
+echo $x | grep -q uefi.zip$ && dest=$pth/boot/isolinux/efi || dest=$pth/xzm/$x
+test -e $dest || components="$x $components"
+done
+restart_net() {
+dunstify -u normal -i $PTH/status/dialog-warning.png "5 download attempts failed - restarting network service ..."
+killall dhcpcd wpa_supplicant 2>/dev/null
+for nic in `ls -1 /sys/class/net | grep -v ^lo`; do ifconfig $nic down; done
+sleep 3
+for nic in `ls -1 /sys/class/net | grep -v ^lo`; do ifconfig $nic up; done; /etc/rc.d/rc.inet1
+sleep 15
+}
+fetch_component() {
+DONE=no; TRIES=9
+while [ $TRIES -gt 0 ]; do
+while [ "$(pidof wget)" ]; do sleep 1; done
+test -e $pth/xzm/$x && { DONE=yes; break; }
+# ARM64: Removed tracking calls
+# [ $TRIES = 8 ] && $wget -q -T20 -t2 $URLP/failed-dw-rec?$profile$prof
+[ $TRIES = 4 ] && { restart_net; }
+$wget -O $pth/xzm/$x $URLP/modules/$x 2>/tmp/out &
+VAR=0; pgs=0
+while [ "$pgs" -lt 100 ]; do
+sleep 1; pgs1=`grep % /tmp/out | tail -n1 | cut -d"%" -f1 | rev | cut -d" " -f1 | rev`; [ "$pgs1" ] || pgs1=0
+[ "$pgs" -lt "$pgs1" ] && VAR=$(dunstify -p -r $VAR -u critical -i $PTH/status/dialog-information.png -h int:value:$pgs " Downloading $x component ...")
+pgs=`grep % /tmp/out | tail -n1 | cut -d"%" -f1 | rev | cut -d" " -f1 | rev`; [ "$pgs" ] || pgs=0
+done
+VAR=$(dunstify -p -r $VAR -u critical -i $PTH/status/dialog-information.png -h int:value:$pgs " Downloading $x component ...")
+while [ "$(pidof wget)" ]; do sleep 1; done; rm -f /tmp/out; sync
+[ $mdr = `md5sum $pth/xzm/$x | cut -d" " -f1` ] && { DONE=yes; break; } || { TRIES=$((TRIES-1)); echo 3 > /proc/sys/vm/drop_caches; rm -f $pth/xzm/$x; }
+done
+}
+burn_ISO() {
+rm -f /sbin/udev-automount /etc/acpi/default.sh; umount -at no,aufs,proc,sysfs,devtmpfs,devpts; umount -at no,aufs,proc,sysfs,devtmpfs,devpts; umount -at no,aufs,proc,sysfs,devtmpfs,devpts
+if echo $burn | grep -q "2$"; then
+trgt=$burn
+if [ "$lowvfs" ]; then
+mkisofs -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . | dd > /dev/$burn bs=1M 2>/dev/null
+else
+if [ $TRIES -lt 4 ]; then
+[ $TRIES = 3 ] && { dunstify -u critical -i $PTH/status/dialog-information.png "Switching burning method ..."; }
+mkisofs -o ../kiosk.iso -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . >/dev/null 2>&1
+cat /mnt/kiosk.iso > /dev/$burn 2>/dev/null
+else
+mkisofs -o ../kiosk.iso -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . >/dev/null 2>&1
+dd < /mnt/kiosk.iso > /dev/$burn bs=1M 2>/dev/null
+fi
+fi
+else
+[ `echo $burn | cut -c1-3` = mmc -o `echo $burn | cut -c1-4` = nvme ] && { prtt=p; fps=40M; wsize=50M; } || { fps=2M; wsize=10M; }
+trgt=$burn"$prtt"2
+dd < /dev/zero > /dev/$burn bs=$wsize count=1 2>/dev/null
+sync; sleep 1
+echo -e 'n\np\n1\n\n+'$fps'\na\nn\np\n2\n\n+'$spsize'M\nn\np\n4\n\n\nw\n' | fdisk /dev/$burn >/dev/null
+dd < $bimg/boot.img > /dev/$burn bs=446 count=1 2>/dev/null
+dd < $bimg/core.img > /dev/$burn bs=512 seek=1 2>/dev/null
+[ -b /dev/$burn"$prtt"1 ] || { sleep 2; sync; }
+[ -b /dev/$burn"$prtt"1 ] || { sleep 2; sync; }
+[ -b /dev/$burn"$prtt"1 ] || { trgt=$burn"$prtt"99; dunstify -u critical -i $PTH/status/dialog-information.png "Partitioning failed ..."; [ -b /dev/$burn ] && dstat=$burn-yes || dstat=$burn-no; }
+mkfs.fat -F 12 /dev/$burn"$prtt"1; fatlabel /dev/$burn"$prtt"1 Boot; mkdir /mnt/efi; mount /dev/$burn"$prtt"1 /mnt/efi; mkdir -p /mnt/efi/EFI/BOOT; cp $bimg/bootia32.efi $bimg/bootx64.efi $bimg/startup.nsh /mnt/efi/EFI/BOOT; umount /mnt/efi
+if [ "$lowvfs" ]; then
+mkisofs -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . | dd > /dev/$burn"$prtt"2 bs=1M 2>/dev/null
+else
+if [ $TRIES -lt 4 ]; then
+[ $TRIES = 3 ] && { dunstify -u critical -i $PTH/status/dialog-information.png "Switching burning method ..."; }
+mkisofs -o ../kiosk.iso -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . >/dev/null 2>&1
+cat /mnt/kiosk.iso > /dev/$burn"$prtt"2 2>/dev/null
+else
+mkisofs -o ../kiosk.iso -l -J -joliet-long -R -D -A "Kiosk" -V "Kiosk" -no-emul-boot -boot-info-table -boot-load-size 4 -b boot/isolinux/isolinux.bin -c boot/isolinux/isolinux.boot . >/dev/null 2>&1
+dd < /mnt/kiosk.iso > /dev/$burn"$prtt"2 bs=1M 2>/dev/null
+fi
+fi
+fi
+rm -f /mnt/kiosk.iso; sync
+}
+if [ "$components" ]; then
+if $wget -q -T20 -t3 --spider http://cullerdigitalmedia.com/peanutos; then
+dunstify -u normal -i $PTH/status/dialog-information.png "Downloading additional components ..." 2>/dev/null
+else
+dunstify -u normal -i /usr/share/icons/oxygen/48x48/status/dialog-error.png "Kiosk website is not accessible - please report this issue to your network administrator.\nSystem configuration will not be updated ..." 2>/dev/null
+cleanup; exit
+fi
+$wget -q -O /tmp/log/md5sum $URLP/md5sum?$profile$prof
+grep -q .xzm /tmp/log/md5sum || $wget -q -O /tmp/log/md5sum $URLP/md5sum?$profile$prof
+grep -q .xzm /tmp/log/md5sum || $wget -q -O /tmp/log/md5sum $URLP/md5sum?$profile$prof
+grep -q .xzm /tmp/log/md5sum || { dunstify -u normal -i /usr/share/icons/oxygen/32x32/status/dialog-warning.png "Could not perform reconfiguration as kiosk website is not accessible at the moment."; cleanup; exit; }
+for x in $components; do
+mdr=`grep " $x$" /tmp/log/md5sum | cut -d" " -f1`
+if [ "$mdr" ]; then
+fetch_component; [ $DONE = yes ] || { CS=`du -h $pth/xzm/$x | cut -f1`; CM=`md5sum $pth/xzm/$x | cut -d" " -f1`; dunstify -u critical -i /usr/share/icons/oxygen/48x48/status/dialog-error.png "Detected incorrect MD5 sum of the $x component, downloaded file size is: $CS\nmd5sum is: $CM\ncomparator is: $mdr\nCould not perform the reconfiguration. Please make sure that component name is spelled correctly in the remote config." 2>/dev/null; cleanup; exit; }
+else
+dunstify -u critical -i /usr/share/icons/oxygen/48x48/status/dialog-error.png "$x component has not been found - could not perform the reconfiguration.\nPlease make sure that component name is spelled correctly in the remote config." 2>/dev/null
+cleanup; exit
+fi
+done
+fi
+[ -d $pth ] || { cleanup; exit; }
+if echo "$xzm" | grep -q uefi.zip; then
+echo "$components" | grep -q uefi.zip && { unzip -o $pth/xzm/uefi.zip -d $pth/boot/isolinux 2>/dev/null; rm -f $pth/xzm/uefi.zip; }
+else
+rm -rf $pth/boot/isolinux/efi
+fi
+walr=`value wallpaper`; wall=`grep ^wallpaper= $umd5c 2>/dev/null | head -n1 | cut -d= -f2-`; [ "$wall" ] || wall=no; [ "$walr" = "$wall" ] || wallpaper=$walr
+[ "$wallpaper" ] && { pkget $wallpaper /tmp/default.jpg; cp -a /tmp/default.jpg $pth/docs/default.jpg 2>/dev/null; }
+[ -e $pth/docs/kiosk.sgn1 ] && dunstify -u normal -i $PTH/actions/dialog-ok-apply.png "Forced parameters present ..." 2>/dev/null
+test -e $pth/boot/isolinux/grub.cfg || cp -a $bimg/grub.cfg $pth/boot/isolinux
+rm -f /tmp/default.jpg
+if [ -e $pth/docs/kiosk.jpg ]; then
+if [ "`grep run_splash /proc/cmdline`" ]; then
+simager=`value splash`
+if [ "$simager" ]; then
+simagel=`grep ^splash= $umd5c 2>/dev/null | head -n1 | cut -d= -f2-`; [ "$simagel" ] || simagel=no; [ "$simager" = "$simagel" ] || simage=$simager
+[ "$simage" ] && pkget $simage /tmp/default.jpg
+else
+rm -f $pth/docs/kiosk.jpg
+fi
+fi
+else
+if [ "`grep run_splash /proc/cmdline`" ]; then
+simager=`value splash`
+if [ "$simager" ]; then
+simagel=`grep ^splash= $umd5c 2>/dev/null | head -n1 | cut -d= -f2-`; [ "$simagel" ] || simagel=no; [ "$simager" = "$simagel" ] || simage=$simager
+[ "$simage" ] && pkget $simage /tmp/default.jpg
+fi
+else
+# ARM64: Simplified - use single splash.jpg
+$wget -q -O /tmp/default.jpg http://cullerdigitalmedia.com/peanutos/wallpapers/splash.jpg
+fi
+fi
+test -e /tmp/default.jpg && cp -a /tmp/default.jpg $pth/docs/kiosk.jpg 2>/dev/null
+sed -i 's/ first_run//' $pth/boot/isolinux/efi/grub.cfg 2>/dev/null
+kprm=`value kernel_parameters`; for x in $kprm; do kpar="$kpar $x"; done; kpar=`echo $kpar | sed "s/^ .//"`; bootf=$pth/boot/isolinux
+grep -q '\^' $bootf/isolinux.cfg && { oldp=`egrep -o " \^[^\^]+" $bootf/isolinux.cfg | sed s/^..//`; sed -i "s|\^$oldp\^|\^ $kpar \^|" $bootf/isolinux.cfg; } || sed -i "s|quiet|quiet \^ $kpar \^|" $bootf/isolinux.cfg
+grep -q '\^' $bootf/grub.cfg && { oldp=`egrep -o " \^[^\^]+" $bootf/grub.cfg | sed s/^..//`; sed -i "s|\^$oldp\^|\^ $kpar \^|" $bootf/grub.cfg; } || sed -i "s|quiet|quiet \^ $kpar \^|" $bootf/grub.cfg
+while [ "$(pidof wget)" ]; do sleep 1; done
+for x in $pth/boot/vmlinuz $pth/boot/initrd.xz $pth/boot/isolinux/isolinux.cfg $pth/docs/default.jpg $pth/xzm/*.xzm; do md5sum $x 2>/dev/null | cut -d" " -f1 >> /tmp/md5sum; done
+mac=`grep ^mac= /tmp/log/md5 2>/dev/null | head -n1 | cut -d= -f2-`
+echo `echo $mac | rev | cut -c1,3,5,7,9,11,13``echo $mac | cut -c1,3,5,7,9,11,13`XzY1 | openssl aes-256-cbc -md MD5 -a -in /tmp/md5sum -out $pth/docs/md5 -pass stdin 2>/dev/null
+sed -i '/^$/d' /tmp/config; uniq -u /tmp/config > /tmp/conf; mv /tmp/conf /tmp/config
+echo `md5sum $pth/docs/md5 | cut -d" " -f1 | tr "a-z" "A-Z"`ZyX9 | openssl aes-256-cbc -md MD5 -a -in /tmp/config -out $pth/docs/config -pass stdin 2>/dev/null
+mv -f $pth/docs/md5 $pth/docs/kiosk.sgn; echo "clwrosKXGt0bChL2njIXjANuvHRbWKPeTbkN3lVlWu/ZB6TCPO54F0/LKk2H+lkk" >> $pth/docs/kiosk.sgn
+cat $pth/docs/config >> $pth/docs/kiosk.sgn; rm -f $pth/docs/config; cd $pth
+[ `df -h | grep aufs | tr -s ' ' | cut -d' ' -f5 | sed 's/%//'` -gt 60 ] && { lowvfs=yes; dunstify -u critical -i /usr/share/icons/oxygen/32x32/status/dialog-warning.png "WARNING: virtual filesystem size is low. If system reconfiguration fails then it could be due to not enough of RAM available on this PC.\nPlease increase the RAM size or do not enable any additional components (e.g. printing) for this machine." 2>/dev/null; sleep 5; }
+isize=$((`du $pth | tail -n1 | cut -d/ -f1`/1024+3))
+[ "$isize" -gt "$spsize" ] && { dunstify -u critical -i $PTH/status/dialog-warning.png "Kiosk ISO size: $isize MB is larger than system partition size: $spsize MB. We cant continue - skipping reconfiguration."; cleanup; exit; }
+dunstify -u critical -i $PTH/status/dialog-information.png "Burning ISO on /dev/$burn - this may take a while ..." 2>/dev/null
+sync; echo 3 > /proc/sys/vm/drop_caches; burn_ISO; sync
+dunstify -u critical -i $PTH/status/dialog-information.png "Verifying installation ..." 2>/dev/null
+mkdir /mnt/VER; VERIFIED=no; TRIES=6
+while [ $VERIFIED = no -a $TRIES -gt 1 ]; do
+cmd5() {
+rm -f /tmp/log/md5sum /tmp/log/md5ver; sync; echo 3 > /proc/sys/vm/drop_caches
+mount /dev/$trgt /mnt/VER
+for x in boot/vmlinuz boot/initrd.xz docs/default.jpg xzm/*.xzm; do md5sum $x 2>/dev/null | sed -e s@boot/@@ -e s@docs/@@ -e s@xzm/@@ >> /tmp/log/md5sum; done
+for x in /mnt/VER/boot/vmlinuz /mnt/VER/boot/initrd.xz /mnt/VER/docs/default.jpg /mnt/VER/xzm/*.xzm; do cp $x /tmp; sync; md5sum /tmp/`echo $x | sed -e s@/mnt/VER/boot/@@ -e s@/mnt/VER/docs/@@ -e s@/mnt/VER/xzm/@@` 2>&1 | sed s@/tmp/@@ >> /tmp/log/md5ver; rm -f /tmp/vmlinuz /tmp/initrd.xz /tmp/default.jpg /tmp/*.xzm; done
+}
+unset bburn mmount; cmd5
+for x in `cut -s -d" " -f2- /tmp/log/md5sum`; do [ `grep " $x$" /tmp/log/md5ver | cut -d" " -f1` = `grep " $x$" /tmp/log/md5sum | cut -d" " -f1` ] || { umount /mnt/VER; cmd5; break; }; done
+for x in `cut -s -d" " -f2- /tmp/log/md5sum`; do [ `grep " $x$" /tmp/log/md5ver | cut -d" " -f1` = `grep " $x$" /tmp/log/md5sum | cut -d" " -f1` ] || { umount /mnt/VER; cmd5; break; }; done
+for x in `cut -s -d" " -f2- /tmp/log/md5sum`; do [ `grep " $x$" /tmp/log/md5ver | cut -d" " -f1` = `grep " $x$" /tmp/log/md5sum | cut -d" " -f1` ] || { [ `echo $x | grep '.xzm'` ] && { csize=`du -h /mnt/VER/xzm/$x | cut -f1`; mount -o loop /mnt/VER/xzm/$x /media && mmount=yes || mmount=no; umount /media; } || [ `echo $x | grep '.jpg'` ] && csize=`du /mnt/VER/docs/$x | cut -f1` || csize=`du /mnt/VER/boot/$x | cut -f1`; bburn=$x; break; }; done
+umount /mnt/VER
+if [ "$bburn" ]; then
+[ -e /opt/scripts/files/bad_burn ] && dmesgn=10 || { touch /opt/scripts/files/bad_burn; dmesgn=30; }
+ramm=`free -m | grep Mem: | tr -s ' ' | cut -d' ' -f2`; vfss=`df -h | grep aufs | tr -s ' ' | cut -d' ' -f5 | sed 's/%//'`
+devburn=`lsblk -o NAME,TYPE,MODEL,SIZE /dev/$burn 2>&1 | egrep -v "NAME|loop|part|rom" | tr -s " " | tr " " "-"`
+llog=`sed 's/ /_/g' /tmp/log/md5sum | tr '\n' ';'`; rlog=`sed 's/ /_/g' /tmp/log/md5ver | tr '\n' ';'`; dmesgl=`dmesg | tail -n "$dmesgn" | sed 's/ /_/g' | tr '\n' ';'`
+# ARM64: Removed tracking call
+# $wget -q -T20 -t2 $URLP/failed-burn-rec?$profile$prof-tries:$TRIES-ram:$ramm-vfs:$vfss-lowvfs:$lowvfs-component:$bburn-size:$csize-mountable:$mmount-bdev=$burn-bootdev:$devboot-burndev:$devburn-blog:$llog-alog:$rlog-dmesg:$dmesgl
+TRIES=$((TRIES-1)); dunstify -u critical -i $PTH/status/dialog-information.png "Detected bad burn on $x component - tries left: $TRIES" 2>/dev/null
+sync; echo 3 > /proc/sys/vm/drop_caches; burn_ISO; sync; sleep 2; unset bburn mmount
+else
+VERIFIED=yes
+fi
+done
+if [ $VERIFIED = no ]; then
+# ARM64: Removed tracking call
+# $wget -q -T20 -t2 $URLP/badburn-rec?$profile$prof
+dunstify -u critical -i $PTH/status/dialog-information.png "Installation failed 5 times - booting media: /dev/$burn may need to be replaced. Make sure this device is not write protected by a hardware switch.\nSystem will be powered off in 60 seconds." 2>/dev/null
+cleanup; sleep 60; init 0
+else
+# ARM64: Removed tracking call
+# [ -e /opt/scripts/files/bad_burn ] && $wget -q -T20 -t2 $URLP/success-burn-rcv?$profile$prof
+sync
+fi
+if [ "$pers" ]; then
+dunstify -u critical -i $PTH/status/dialog-information.png "Recreating persistent storage ..." 2>/dev/null
+mount $pers /tmp/pers; cp -a /tmp/perst/* /tmp/pers; umount $pers
+fi
+dunstify -u critical -i $PTH/actions/dialog-ok-apply.png "Kiosk reconfiguration is complete.\nSystem will reboot now ..." 2>/dev/null
+cleanup; sleep 1; [ -e /tmp/log/md5hash ] && { cd /; umount -l $pth/xzm; rm -rf $pth /tmp/log /opt/scripts/update; }; init 6
+ -- 

@@ -1,0 +1,26 @@
+#!/bin/sh
+
+export WizardNow='
+<window decorated="true" title="Network Wizard" icon-name="kiosk" resizable="false" width-request="400">
+<vbox margin="10">
+    <text use-markup="true" yalign="1"><label>"<span weight='"'bold'"' size='"'x-large'"'>Network connection wizard</span>"</label></text>
+    <hseparator></hseparator>
+    <text><label>""</label></text>
+    <text yalign="0" xalign="0" wrap="true" width-request="350">
+	<label>Wait on connection or click on the launch button below to start the network wizard immediately.</label>
+    </text>
+    <text><label>""</label></text>
+    <hseparator></hseparator>
+    <hbox>
+        <button can-default="true" has-default="true" use-stock="true">
+            <label>Launch network wizard</label>
+            <input file icon="gtk-ok"></input>
+            <action>touch /tmp/launch-wizard</action>
+            <action>kill -9 `ps | grep -w WizardNow | tr -s " " | cut -d: -f1 | rev | cut -d" " -f3 | rev | tr "\n" " "`</action>
+        </button>
+    </hbox>
+</vbox>
+</window>
+'
+
+gtkdialog -c -p WizardNow

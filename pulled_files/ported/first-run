@@ -1,0 +1,13 @@
+#!/bin/bash
+#
+# first-run - ARM64 replacement for compiled x86 binary
+# Simply calls welcome then wizard in sequence
+#
+
+# Run network configuration wizard
+[ -x /opt/scripts/welcome ] && /opt/scripts/welcome
+
+# Run TuxOS authorization wizard
+[ -x /opt/scripts/wizard ] && /opt/scripts/wizard
+
+exit 0

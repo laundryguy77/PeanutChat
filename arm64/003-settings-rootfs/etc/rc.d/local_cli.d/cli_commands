@@ -1,0 +1,4 @@
+# Place commands to run during CLI initialization here.
+# These are sourced by rc.S when not in first_run mode.
+# Example:
+# echo "Custom CLI command"

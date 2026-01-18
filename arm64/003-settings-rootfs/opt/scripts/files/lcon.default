@@ -1,0 +1,7 @@
+# Default Porteus Kiosk ARM64 Configuration
+browser=chromium
+homepage=https://www.google.com
+kiosk_config=
+daemon_check=60
+hostname=kiosk-arm64
+timezone=UTC

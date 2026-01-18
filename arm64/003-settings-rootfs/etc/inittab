@@ -1,0 +1,7 @@
+# Culler ARM64 inittab
+id:4:initdefault:
+si::sysinit:/etc/rc.d/rc.S
+rc:2345:wait:/etc/rc.d/rc.M
+l0:0:wait:/etc/rc.d/rc.0
+l6:6:wait:/etc/rc.d/rc.6
+x1:4:respawn:/etc/rc.d/rc.4

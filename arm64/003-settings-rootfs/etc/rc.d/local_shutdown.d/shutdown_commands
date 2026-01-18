@@ -1,0 +1,4 @@
+# Place commands to run during shutdown here.
+# These are sourced by rc.6 before killing processes.
+# Example:
+# echo "Shutting down..."

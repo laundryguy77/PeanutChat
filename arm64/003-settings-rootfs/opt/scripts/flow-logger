@@ -1,0 +1,113 @@
+#!/bin/bash
+# flow-logger - Script flow logging for TuxOS ARM64 debugging
+# Logs to partition 4 (storage) at /mnt/logs/flow.log
+
+LOGDIR="/mnt/logs"
+LOGFILE="$LOGDIR/flow.log"
+
+# Try to mount storage partition if not already mounted
+mount_storage() {
+    if [ ! -d "$LOGDIR" ]; then
+        mkdir -p "$LOGDIR"
+    fi
+
+    if ! mountpoint -q "$LOGDIR" 2>/dev/null; then
+        # Try common storage partition locations
+        for dev in /dev/mmcblk0p4 /dev/sda4 /dev/sdb4; do
+            if [ -b "$dev" ]; then
+                mount "$dev" "$LOGDIR" 2>/dev/null && break
+            fi
+        done
+    fi
+
+    # Fallback to tmpfs if no storage partition
+    if ! mountpoint -q "$LOGDIR" 2>/dev/null; then
+        mount -t tmpfs tmpfs "$LOGDIR" 2>/dev/null
+    fi
+}
+
+# Initialize logging
+init_log() {
+    mount_storage
+    echo "========================================" >> "$LOGFILE"
+    echo "=== BOOT FLOW LOG - $(date) ===" >> "$LOGFILE"
+    echo "========================================" >> "$LOGFILE"
+}
+
+# Log a message with timestamp and caller info
+# Usage: flow_log "SCRIPT_NAME" "MESSAGE"
+flow_log() {
+    local script="$1"
+    local message="$2"
+    local timestamp=$(date '+%H:%M:%S.%3N')
+    local ppid_name=$(cat /proc/$PPID/comm 2>/dev/null || echo "unknown")
+
+    echo "[$timestamp] [$script] (parent:$ppid_name) $message" >> "$LOGFILE"
+}
+
+# Log script entry
+# Usage: flow_enter "SCRIPT_NAME"
+flow_enter() {
+    local script="$1"
+    flow_log "$script" ">>> ENTER"
+}
+
+# Log script exit
+# Usage: flow_exit "SCRIPT_NAME" "EXIT_CODE"
+flow_exit() {
+    local script="$1"
+    local code="${2:-0}"
+    flow_log "$script" "<<< EXIT (code=$code)"
+}
+
+# Log calling another script
+# Usage: flow_call "CALLER" "CALLEE"
+flow_call() {
+    local caller="$1"
+    local callee="$2"
+    flow_log "$caller" "-> CALLING: $callee"
+}
+
+# Log returning from a call
+# Usage: flow_return "CALLER" "CALLEE" "EXIT_CODE"
+flow_return() {
+    local caller="$1"
+    local callee="$2"
+    local code="${3:-0}"
+    flow_log "$caller" "<- RETURNED: $callee (code=$code)"
+}
+
+# Log a checkpoint/milestone
+# Usage: flow_checkpoint "SCRIPT_NAME" "DESCRIPTION"
+flow_checkpoint() {
+    local script="$1"
+    local desc="$2"
+    flow_log "$script" "** $desc"
+}
+
+# Log an error
+# Usage: flow_error "SCRIPT_NAME" "ERROR_MESSAGE"
+flow_error() {
+    local script="$1"
+    local error="$2"
+    flow_log "$script" "!! ERROR: $error"
+}
+
+# Log variable value
+# Usage: flow_var "SCRIPT_NAME" "VAR_NAME" "VALUE"
+flow_var() {
+    local script="$1"
+    local var="$2"
+    local val="$3"
+    flow_log "$script" "   $var=$val"
+}
+
+# If called directly with arguments, execute the function
+if [ "$1" = "init" ]; then
+    init_log
+elif [ -n "$1" ] && [ -n "$2" ]; then
+    # Called as: flow-logger <function> <args...>
+    func="$1"
+    shift
+    $func "$@"
+fi

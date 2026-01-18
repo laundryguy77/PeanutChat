@@ -1,0 +1,263 @@
+#!/bin/bash
+# boot-capture - Comprehensive boot state capture for TuxOS ARM64 debugging
+# Captures all scripts, configs, system state to partition 4
+
+LOGDIR="/mnt/logs"
+CAPTURE="$LOGDIR/boot-capture.log"
+
+# Mount storage partition
+mount_storage() {
+    mkdir -p "$LOGDIR"
+    if ! mountpoint -q "$LOGDIR" 2>/dev/null; then
+        for dev in /dev/mmcblk0p4 /dev/sda4 /dev/sdb4; do
+            [ -b "$dev" ] && mount "$dev" "$LOGDIR" 2>/dev/null && break
+        done
+    fi
+    # Fallback to tmpfs
+    mountpoint -q "$LOGDIR" 2>/dev/null || mount -t tmpfs tmpfs "$LOGDIR" 2>/dev/null
+}
+
+# Initialize capture
+init_capture() {
+    mount_storage
+    echo "========================================" >> "$CAPTURE"
+    echo "=== BOOT CAPTURE $(date) ===" >> "$CAPTURE"
+    echo "========================================" >> "$CAPTURE"
+}
+
+# Log with timestamp
+log() {
+    echo "[$(date '+%H:%M:%S.%3N')] $*" >> "$CAPTURE"
+}
+
+# Capture file contents
+capture_file() {
+    local f="$1"
+    [ -f "$f" ] || return
+    local size=$(wc -c < "$f" 2>/dev/null)
+    log "=== CAPTURE: $f ($size bytes) ==="
+    cat "$f" >> "$CAPTURE" 2>/dev/null
+    log "=== END: $f ==="
+}
+
+# Capture directory listing
+capture_ls() {
+    local d="$1"
+    log "=== LS: $d ==="
+    ls -la "$d" >> "$CAPTURE" 2>&1
+    log "=== END LS ==="
+}
+
+# Capture all scripts in /opt/scripts
+capture_scripts() {
+    log ">>> CAPTURING /opt/scripts <<<"
+    capture_ls /opt/scripts
+    for f in /opt/scripts/*; do
+        [ -f "$f" ] || continue
+        # Skip binaries (check for ELF magic)
+        magic=$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' ')
+        [ "$magic" = "7f454c46" ] && { log "SKIPPING BINARY: $f"; continue; }
+        capture_file "$f"
+    done
+    # Also capture subdirectories
+    for subdir in /opt/scripts/files /opt/scripts/files/wizard /opt/scripts/param-handlers; do
+        [ -d "$subdir" ] || continue
+        capture_ls "$subdir"
+        for f in "$subdir"/*; do
+            [ -f "$f" ] || continue
+            magic=$(od -An -tx1 -N4 "$f" 2>/dev/null | tr -d ' ')
+            [ "$magic" = "7f454c46" ] && continue
+            capture_file "$f"
+        done
+    done
+}
+
+# Capture system state
+capture_system() {
+    log ">>> CAPTURING SYSTEM STATE <<<"
+
+    log "=== /proc/cmdline ==="
+    cat /proc/cmdline >> "$CAPTURE" 2>/dev/null
+
+    log "=== uname -a ==="
+    uname -a >> "$CAPTURE" 2>/dev/null
+
+    log "=== env ==="
+    env >> "$CAPTURE" 2>/dev/null
+
+    log "=== Network interfaces ==="
+    ip link show >> "$CAPTURE" 2>/dev/null
+    ifconfig -a >> "$CAPTURE" 2>/dev/null
+
+    log "=== iwconfig ==="
+    iwconfig >> "$CAPTURE" 2>&1
+
+    log "=== ps aux ==="
+    ps aux >> "$CAPTURE" 2>/dev/null
+
+    log "=== mount ==="
+    mount >> "$CAPTURE" 2>/dev/null
+
+    log "=== df -h ==="
+    df -h >> "$CAPTURE" 2>/dev/null
+}
+
+# Capture /tmp state (knet, config, etc)
+capture_tmp() {
+    log ">>> CAPTURING /tmp STATE <<<"
+    capture_ls /tmp
+
+    # Capture key files
+    for f in /tmp/config /tmp/report /tmp/.xinitrc /tmp/autostart.log; do
+        capture_file "$f"
+    done
+
+    # Capture /tmp/knet directory
+    if [ -d /tmp/knet ]; then
+        capture_ls /tmp/knet
+        for f in /tmp/knet/*; do
+            [ -f "$f" ] && capture_file "$f"
+        done
+    fi
+}
+
+# Capture X/GTK state
+capture_display() {
+    log ">>> CAPTURING DISPLAY STATE <<<"
+
+    log "=== DISPLAY var ==="
+    echo "DISPLAY=$DISPLAY" >> "$CAPTURE"
+
+    log "=== xrandr ==="
+    DISPLAY=:0 xrandr >> "$CAPTURE" 2>&1
+
+    log "=== xdpyinfo ==="
+    DISPLAY=:0 xdpyinfo 2>&1 | head -30 >> "$CAPTURE"
+
+    log "=== openbox process ==="
+    ps aux | grep -i openbox >> "$CAPTURE" 2>/dev/null
+
+    log "=== gtkdialog process ==="
+    ps aux | grep -i gtkdialog >> "$CAPTURE" 2>/dev/null
+}
+
+# Check wizard prerequisites (icons, gtkdialog)
+capture_wizard_prereqs() {
+    log ">>> CHECKING WIZARD PREREQUISITES <<<"
+
+    log "=== Required Icon Files ==="
+    for icon in \
+        /usr/share/pixmaps/wired-160.png \
+        /usr/share/pixmaps/wifi-160.png \
+        /usr/share/pixmaps/vk-48.png \
+        /usr/share/pixmaps/idle-48.png \
+        /usr/share/icons/oxygen/16x16/actions/go-next.png \
+        /usr/share/icons/oxygen/16x16/actions/go-previous.png \
+        /usr/share/icons/oxygen/22x22/actions/gtk-no.png \
+        /usr/share/icons/oxygen/22x22/actions/gtk-ok.png
+    do
+        if [ -f "$icon" ]; then
+            ls -la "$icon" >> "$CAPTURE" 2>&1
+        else
+            log "MISSING: $icon"
+        fi
+    done
+
+    log "=== gtkdialog binary ==="
+    which gtkdialog >> "$CAPTURE" 2>&1
+    ls -la $(which gtkdialog 2>/dev/null) >> "$CAPTURE" 2>&1
+    ldd $(which gtkdialog 2>/dev/null) 2>&1 | grep -i "not found" >> "$CAPTURE" || log "All gtkdialog libs OK"
+
+    log "=== gtkdialog version ==="
+    gtkdialog --version >> "$CAPTURE" 2>&1
+
+    log "=== Testing gtkdialog basic functionality ==="
+    export DISPLAY=:0
+    TEST_RESULT=$(echo '<window><text><label>Test</label></text><button><label>OK</label><action>exit:0</action></button></window>' | timeout 2 gtkdialog -s -c 2>&1)
+    log "gtkdialog test result: $TEST_RESULT"
+
+    log "=== GTK Theme files ==="
+    ls -la /usr/share/themes/ >> "$CAPTURE" 2>&1
+    ls -la ~/.gtkrc* >> "$CAPTURE" 2>&1
+    ls -la /etc/gtk-2.0/ >> "$CAPTURE" 2>&1
+}
+
+# Capture Xorg log
+capture_xorg() {
+    log ">>> CAPTURING XORG LOG <<<"
+    for f in /var/log/Xorg.0.log /mnt/logs/Xorg.0.log /tmp/Xorg.0.log; do
+        [ -f "$f" ] && capture_file "$f"
+    done
+}
+
+# Continuous monitor mode - watch for changes
+monitor_knet() {
+    log ">>> STARTING KNET MONITOR <<<"
+    local last_page=""
+    while true; do
+        if [ -f /tmp/knet/.knetPage ]; then
+            page=$(cat /tmp/knet/.knetPage 2>/dev/null)
+            if [ "$page" != "$last_page" ]; then
+                log "!!! .knetPage CHANGED: $last_page -> $page"
+                last_page="$page"
+                # Capture current knet state on change
+                capture_ls /tmp/knet
+                for f in /tmp/knet/*; do
+                    [ -f "$f" ] && capture_file "$f"
+                done
+            fi
+        fi
+        sleep 1
+    done
+}
+
+# === MAIN ===
+case "$1" in
+    init)
+        init_capture
+        log "Boot capture initialized"
+        ;;
+    scripts)
+        capture_scripts
+        ;;
+    system)
+        capture_system
+        ;;
+    tmp)
+        capture_tmp
+        ;;
+    display)
+        capture_display
+        ;;
+    prereqs)
+        capture_wizard_prereqs
+        ;;
+    xorg)
+        capture_xorg
+        ;;
+    monitor)
+        monitor_knet
+        ;;
+    all)
+        init_capture
+        capture_system
+        capture_scripts
+        capture_wizard_prereqs
+        capture_tmp
+        capture_display
+        capture_xorg
+        log "=== FULL CAPTURE COMPLETE ==="
+        ;;
+    *)
+        echo "Usage: $0 {init|scripts|system|tmp|display|prereqs|xorg|monitor|all}"
+        echo "  init    - Initialize capture log"
+        echo "  scripts - Capture all /opt/scripts"
+        echo "  system  - Capture system state"
+        echo "  tmp     - Capture /tmp files"
+        echo "  display - Capture X/GTK state"
+        echo "  prereqs - Check wizard prerequisites (icons, gtkdialog)"
+        echo "  xorg    - Capture Xorg log"
+        echo "  monitor - Monitor .knetPage changes"
+        echo "  all     - Full capture"
+        ;;
+esac

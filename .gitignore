@@ -1,0 +1,14 @@
+# Ignore chroot directories with permission issues
+arm64-chroot/
+arm64/rootfs/var/cache/ldconfig/
+
+# Ignore output builds (can be rebuilt)
+arm64/output/*.xzm
+
+# Ignore large binary files
+*.img
+*.iso
+
+# Ignore temporary files
+*.tmp
+*.log
