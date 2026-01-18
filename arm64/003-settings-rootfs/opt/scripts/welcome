@@ -58,10 +58,16 @@ trap 'cleanup' 2 14 15
 
 ## Setup files required - Clean state before starting
 mkdir -p $TMP
-rm -f $TMP/.knetPage $TMP/*.tmp
-echo 0 > $TMP/.knetPage
+rm -rf $TMP/*  # Clean entire directory to ensure fresh state
+# Write page number WITHOUT trailing newline - critical for gtkdialog
+printf '0' > $TMP/.knetPage
 sync
-sleep 0.2
+sleep 0.3
+# Verify file content
+if [ "$(cat $TMP/.knetPage)" != "0" ]; then
+    echo "[welcome] ERROR: .knetPage initialization failed, content: '$(cat $TMP/.knetPage)'" >&2
+fi
+echo "[welcome] .knetPage initialized to: '$(cat $TMP/.knetPage)'" >&2
 echo > $TMP/device
 echo true > $TMP/proxyExcDis.mon
 echo "Scanning ... please wait" > $TMP/essid
@@ -613,10 +619,18 @@ SPATH=${SCRIPT%/*}
 # ARM64 DEBUG: Capture gtkdialog errors
 echo "[welcome] About to launch gtkdialog..." >&2
 echo "[welcome] DISPLAY=$DISPLAY" >&2
+echo "[welcome] TMP=$TMP" >&2
+echo "[welcome] .knetPage content: '$(cat $TMP/.knetPage 2>/dev/null)'" >&2
+echo "[welcome] .knetPage file exists: $(test -f $TMP/.knetPage && echo yes || echo no)" >&2
 echo "[welcome] Checking gtkdialog binary..." >&2
 which gtkdialog >&2 || echo "[welcome] gtkdialog not in PATH" >&2
 ls -la /usr/bin/gtkdialog >&2 2>/dev/null || echo "[welcome] /usr/bin/gtkdialog not found" >&2
+# Verify wizard-functions exists
+echo "[welcome] wizard-functions exists: $(test -f /opt/scripts/files/wizard/wizard-functions && echo yes || echo no)" >&2
 echo "[welcome] Launching gtkdialog now..." >&2
+# Save the processed WIZARD_PRE to file for debugging
+echo "$WIZARD_PRE" | sed '/^##/d' > $TMP/wizard_pre_debug.xml
+echo "[welcome] Saved processed XML to $TMP/wizard_pre_debug.xml" >&2
 echo "$WIZARD_PRE"| sed '/^##/d' | gtkdialog -i /opt/scripts/files/wizard/wizard-functions -s -c > $TMP/output 2>&1
 GTKRET=$?
 echo "[welcome] gtkdialog exit code: $GTKRET" >&2

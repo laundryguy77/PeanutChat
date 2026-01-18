@@ -5,6 +5,9 @@ arm64/rootfs/var/cache/ldconfig/
 # Ignore output builds (can be rebuilt)
 arm64/output/*.xzm
 
+# Ignore build work directories (temporary extraction)
+.iso_work/
+
 # Ignore large binary files
 *.img
 *.iso
