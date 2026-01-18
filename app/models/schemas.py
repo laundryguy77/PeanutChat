@@ -31,13 +31,3 @@ class SettingsUpdate(BaseModel):
     top_k: Optional[int] = None
     num_ctx: Optional[int] = None
     repeat_penalty: Optional[float] = None
-    tts_enabled: Optional[bool] = None
-    tts_speaker: Optional[int] = None
-    tts_temperature: Optional[float] = None
-    tts_topk: Optional[int] = None
-
-class VideoStatus(BaseModel):
-    video_id: str
-    status: str  # queued, generating, complete, error
-    url: Optional[str] = None
-    error: Optional[str] = None

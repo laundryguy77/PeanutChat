@@ -5,9 +5,5 @@
   "top_p": 0.9,
   "top_k": 40,
   "num_ctx": 4096,
-  "repeat_penalty": 1.1,
-  "tts_enabled": false,
-  "tts_speaker": 8,
-  "tts_temperature": 0.9,
-  "tts_topk": 65
+  "repeat_penalty": 1.1
 }

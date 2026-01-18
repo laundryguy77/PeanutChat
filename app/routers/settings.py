@@ -24,18 +24,6 @@ async def update_all_settings(updates: SettingsUpdate) -> Dict[str, Any]:
 
     update_settings(current)
 
-    # Apply TTS settings if they were updated
-    if any(k.startswith('tts_') for k in update_dict.keys()):
-        try:
-            from app.services.tts_service import tts_service
-            tts_service.update_settings(
-                speaker=current.tts_speaker,
-                temperature=current.tts_temperature,
-                topk=current.tts_topk
-            )
-        except Exception as e:
-            print(f"Failed to update TTS settings: {e}")
-
     return current.model_dump()
 
 @router.get("/persona")
