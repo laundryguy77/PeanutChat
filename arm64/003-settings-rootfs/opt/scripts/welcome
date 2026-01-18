@@ -534,6 +534,7 @@ export WIZARD_PRE='
 
 
 <variable>nPage</variable>
+<default>0</default>
 <input file>'$TMP'/.knetPage</input>
 </notebook>
 

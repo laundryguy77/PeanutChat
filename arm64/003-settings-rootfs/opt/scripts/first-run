@@ -42,6 +42,10 @@ killall dhcpcd wpa_supplicant wvdial 2>/dev/null
 killall dhcpcd wpa_supplicant wvdial 2>/dev/null
 rm -f /etc/resolv.conf /etc/ppp/resolv.conf
 unset http_proxy https_proxy ftp_proxy no_proxy
+# ARM64 FIX: Pre-create .knetPage file to ensure gtkdialog reads page 0
+mkdir -p /tmp/knet
+printf '0' > /tmp/knet/.knetPage
+sync
 # ARM64 FIX: Call welcome directly (or with bash) to honor its #!/bin/bash shebang
 # Using sh would run under busybox which lacks bash features
 /opt/scripts/welcome >>/mnt/logs/welcome.log 2>&1
