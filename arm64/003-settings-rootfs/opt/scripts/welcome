@@ -65,21 +65,11 @@ echo "DISPLAY: $DISPLAY" >> $LOGFILE
 echo "TMP: $TMP" >> $LOGFILE
 echo "PWD: $(pwd)" >> $LOGFILE
 
-mkdir -p $TMP
-echo "Created TMP dir: $?" >> $LOGFILE
-rm -rf $TMP/*
-echo "Cleaned TMP dir: $?" >> $LOGFILE
-
-# Write page number WITHOUT trailing newline - critical for gtkdialog
-printf '0' > $TMP/.knetPage
-sync
-sleep 0.3
-
-# Verify file content
-PAGECONTENT=$(cat $TMP/.knetPage 2>&1)
-echo ".knetPage content: '$PAGECONTENT'" >> $LOGFILE
-echo ".knetPage hex: $(xxd $TMP/.knetPage 2>&1)" >> $LOGFILE
-ls -la $TMP/.knetPage >> $LOGFILE 2>&1
+# Clean and recreate TMP directory (match x86 exactly)
+[ -d $TMP ] && rm -rf $TMP
+mkdir $TMP
+echo 0 > $TMP/.knetPage
+echo "TMP initialized, .knetPage content: $(cat $TMP/.knetPage)" >> $LOGFILE
 
 echo > $TMP/device
 echo true > $TMP/proxyExcDis.mon
