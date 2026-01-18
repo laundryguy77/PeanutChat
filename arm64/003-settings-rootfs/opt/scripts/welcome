@@ -98,7 +98,7 @@ export WIZARD_PRE='
 <window decorated="true" title="TuxOS Wizard" icon-name="kiosk" resizable="false" width-request="'$WINWIDTH'" height-request="'$WINHEIGHT'">
 <vbox  margin="5">
 ## ================ WIRED OR WIRELESS CHOICE 0 ================ ##
-<notebook page="0" current-page="0" show-tabs="false" show-border="false" labels="welcome|dialup|nettype|manual|wireless|proxy|browser|confirm">
+<notebook page="0" show-tabs="false" show-border="false" labels="welcome|dialup|nettype|manual|wireless|proxy|browser|confirm">
 <vbox>
 	<text use-markup="true" yalign="1"><label>"<span weight='"'bold'"' size='"'x-large'"'>TuxOS Wizard</span>"</label></text>
 	<hseparator></hseparator>
@@ -547,7 +547,6 @@ export WIZARD_PRE='
 
 
 <variable>nPage</variable>
-<input>0</input>
 <input file>'$TMP'/.knetPage</input>
 </notebook>
 
