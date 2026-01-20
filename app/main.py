@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app import config
 from app.routers import auth, chat, commands, knowledge, mcp, memory, models, settings, user_profile
+from app.services.ollama import ollama_service
 
 logger = logging.getLogger(__name__)
 
@@ -63,3 +64,9 @@ async def health_check():
 async def startup_security_check():
     if config.JWT_SECRET == "change-this-in-production-use-a-long-random-string":
         logger.warning("SECURITY WARNING: Using default JWT_SECRET! Set JWT_SECRET environment variable for production.")
+
+
+@app.on_event("shutdown")
+async def shutdown_cleanup():
+    """Clean up resources on shutdown"""
+    await ollama_service.close()

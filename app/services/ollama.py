@@ -379,6 +379,16 @@ PERSONA:
         response.raise_for_status()
         return response.json()
 
+    async def close(self):
+        """Close the HTTP client"""
+        await self.client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
 
 # Global service instance
 ollama_service = OllamaService()
