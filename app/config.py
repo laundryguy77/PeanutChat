@@ -72,6 +72,11 @@ CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")
 # Cookie security (set to true in production with HTTPS)
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 
+# Trusted proxy configuration for correct client IP detection
+# Set to comma-separated list of trusted proxy IPs (e.g., "127.0.0.1,10.0.0.1")
+# When set, X-Forwarded-For header from these proxies will be trusted
+TRUSTED_PROXIES = [p.strip() for p in os.getenv("TRUSTED_PROXIES", "").split(",") if p.strip()]
+
 # Hugging Face settings (for video generation)
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 VIDEO_GENERATION_SPACE = os.getenv("VIDEO_GENERATION_SPACE", "Heartsync/NSFW-Uncensored-video")

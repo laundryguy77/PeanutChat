@@ -62,8 +62,13 @@ async def health_check():
 
 @app.on_event("startup")
 async def startup_security_check():
+    """Verify security configuration on startup."""
     if config.JWT_SECRET == "change-this-in-production-use-a-long-random-string":
-        logger.warning("SECURITY WARNING: Using default JWT_SECRET! Set JWT_SECRET environment variable for production.")
+        logger.critical("SECURITY ERROR: Default JWT_SECRET detected! Set JWT_SECRET in .env to a secure random value (32+ characters).")
+        raise RuntimeError("Application cannot start with default JWT_SECRET. Set JWT_SECRET environment variable.")
+
+    if len(config.JWT_SECRET) < 32:
+        logger.warning("SECURITY WARNING: JWT_SECRET is shorter than 32 characters. Consider using a longer secret.")
 
 
 @app.on_event("shutdown")

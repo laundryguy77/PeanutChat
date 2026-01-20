@@ -1,15 +1,18 @@
 import logging
 import glob
 import os
+import secrets
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from jose import JWTError, jwt
 import bcrypt
 
 from app.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRE_MINUTES
 from app.services.database import get_database
 from app.models.auth_schemas import UserCreate, UserResponse, UserSettings
+from app.services.token_blacklist import get_token_blacklist
 
 logger = logging.getLogger(__name__)
 
@@ -34,24 +37,76 @@ class AuthService:
         return hashed.decode('utf-8')
 
     def create_access_token(self, user_id: int, username: str) -> str:
-        """Create a JWT access token"""
+        """Create a JWT access token with unique JTI for blacklisting support."""
         expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+        jti = secrets.token_urlsafe(16)  # Unique token identifier
         to_encode = {
             "sub": str(user_id),
             "username": username,
-            "exp": expire
+            "exp": expire,
+            "jti": jti
         }
         encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
         return encoded_jwt
 
-    def decode_token(self, token: str) -> Optional[Dict[str, Any]]:
-        """Decode and validate a JWT token"""
+    def decode_token(self, token: str, check_blacklist: bool = True) -> Optional[Dict[str, Any]]:
+        """Decode and validate a JWT token.
+
+        Args:
+            token: The JWT token string
+            check_blacklist: If True, also check if token is blacklisted
+
+        Returns:
+            Token payload dict if valid and not blacklisted, None otherwise
+        """
         try:
             payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+
+            # Check if token is blacklisted
+            if check_blacklist:
+                jti = payload.get("jti")
+                if jti and get_token_blacklist().is_blacklisted(jti):
+                    logger.debug("Token is blacklisted")
+                    return None
+
             return payload
         except JWTError as e:
             logger.debug(f"Token decode error: {e}")
             return None
+
+    def blacklist_token(self, token: str) -> bool:
+        """Add a token to the blacklist.
+
+        Args:
+            token: The JWT token to blacklist
+
+        Returns:
+            True if successfully blacklisted, False if token invalid
+        """
+        try:
+            # Decode without blacklist check to get JTI and expiry
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            jti = payload.get("jti")
+            if not jti:
+                logger.debug("Token has no JTI, cannot blacklist")
+                return False
+
+            # Calculate remaining TTL
+            exp = payload.get("exp")
+            if exp:
+                remaining_ttl = int(exp - datetime.now(timezone.utc).timestamp())
+                if remaining_ttl > 0:
+                    get_token_blacklist().add(jti, remaining_ttl)
+                    return True
+            return False
+        except JWTError as e:
+            logger.debug(f"Cannot blacklist token: {e}")
+            return False
+
+    @staticmethod
+    def _hash_for_log(value: str) -> str:
+        """Hash a value for safe logging."""
+        return hashlib.sha256(value.encode()).hexdigest()[:12]
 
     def create_user(self, user_data: UserCreate) -> Optional[UserResponse]:
         """Create a new user"""
@@ -61,7 +116,7 @@ class AuthService:
             (user_data.username,)
         )
         if existing:
-            logger.warning(f"Username already exists: {user_data.username}")
+            logger.warning(f"Registration failed: username hash {self._hash_for_log(user_data.username)} already exists")
             return None
 
         # Check if email exists (if provided)
@@ -71,7 +126,7 @@ class AuthService:
                 (user_data.email,)
             )
             if existing_email:
-                logger.warning(f"Email already exists: {user_data.email}")
+                logger.warning(f"Registration failed: email hash {self._hash_for_log(user_data.email)} already exists")
                 return None
 
         # Hash password and create user
@@ -91,7 +146,7 @@ class AuthService:
             (user_id,)
         )
 
-        logger.info(f"Created new user: {user_data.username} (id={user_id})")
+        logger.info(f"Created new user with id={user_id}")
 
         return UserResponse(
             id=user_id,
@@ -107,11 +162,11 @@ class AuthService:
             (username,)
         )
         if not user:
-            logger.debug(f"User not found: {username}")
+            logger.debug(f"Authentication failed: user hash {self._hash_for_log(username)} not found")
             return None
 
         if not self.verify_password(password, user["password_hash"]):
-            logger.debug(f"Invalid password for user: {username}")
+            logger.debug(f"Authentication failed: invalid password for user id={user['id']}")
             return None
 
         return UserResponse(
@@ -137,8 +192,16 @@ class AuthService:
             created_at=user["created_at"]
         )
 
-    def change_password(self, user_id: int, current_password: str, new_password: str) -> bool:
-        """Change user's password"""
+    def verify_user_password(self, user_id: int, password: str) -> bool:
+        """Verify password for a user by ID.
+
+        Args:
+            user_id: The user's ID
+            password: The password to verify
+
+        Returns:
+            True if password is correct, False otherwise
+        """
         user = self.db.fetchone(
             "SELECT password_hash FROM users WHERE id = ?",
             (user_id,)
@@ -146,7 +209,11 @@ class AuthService:
         if not user:
             return False
 
-        if not self.verify_password(current_password, user["password_hash"]):
+        return self.verify_password(password, user["password_hash"])
+
+    def change_password(self, user_id: int, current_password: str, new_password: str) -> bool:
+        """Change user's password"""
+        if not self.verify_user_password(user_id, current_password):
             return False
 
         new_hash = self.hash_password(new_password)
@@ -177,6 +244,12 @@ class AuthService:
             persona=settings["persona"]
         )
 
+    # Whitelist of allowed column names for user_settings table
+    _ALLOWED_SETTINGS_FIELDS = frozenset({
+        "model", "temperature", "top_p", "top_k",
+        "num_ctx", "repeat_penalty", "persona"
+    })
+
     def update_user_settings(self, user_id: int, settings: UserSettings) -> bool:
         """Update user-specific settings"""
         # Build dynamic update query for non-None values
@@ -185,6 +258,10 @@ class AuthService:
 
         for field, value in settings.model_dump().items():
             if value is not None:
+                # Validate field name against whitelist to prevent SQL injection
+                if field not in self._ALLOWED_SETTINGS_FIELDS:
+                    logger.warning(f"Rejecting invalid settings field: {field}")
+                    continue
                 updates.append(f"{field} = ?")
                 values.append(value)
 
