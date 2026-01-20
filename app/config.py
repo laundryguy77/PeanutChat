@@ -66,6 +66,16 @@ KB_EMBEDDING_MODEL = os.getenv("KB_EMBEDDING_MODEL", "nomic-embed-text")
 KB_CHUNK_SIZE = int(os.getenv("KB_CHUNK_SIZE", "512"))
 KB_CHUNK_OVERLAP = int(os.getenv("KB_CHUNK_OVERLAP", "50"))
 
+# CORS settings
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:8080").split(",")
+
+# Cookie security (set to true in production with HTTPS)
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+
+# Hugging Face settings (for video generation)
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+VIDEO_GENERATION_SPACE = os.getenv("VIDEO_GENERATION_SPACE", "Heartsync/NSFW-Uncensored-video")
+
 class AppSettings(BaseModel):
     persona: Optional[str] = None
     model: str = "huihui_ai/qwen3-vl-abliterated:8b"
@@ -74,6 +84,11 @@ class AppSettings(BaseModel):
     top_k: int = 40
     num_ctx: int = 4096
     repeat_penalty: float = 1.1
+    # Context compaction settings
+    compaction_enabled: bool = True
+    compaction_buffer_percent: int = 15  # % of context reserved for summaries (5-30)
+    compaction_threshold_percent: int = 70  # Trigger compaction at this % of active window (50-90)
+    compaction_protected_messages: int = 6  # Recent messages never compacted (4-12)
 
 def load_settings() -> AppSettings:
     if SETTINGS_FILE.exists():

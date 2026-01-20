@@ -1,0 +1,25 @@
+[Unit]
+Description=PeanutChat AI Assistant
+After=network.target ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+User=tech
+Group=tech
+WorkingDirectory=/home/tech/PeanutChat
+ExecStart=/home/tech/PeanutChat/venv/bin/python3 /home/tech/PeanutChat/run.py
+Restart=always
+RestartSec=5
+
+# Logging - capture stdout/stderr to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=peanutchat
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+Environment="PATH=/home/tech/PeanutChat/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target

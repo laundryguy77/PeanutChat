@@ -64,18 +64,14 @@ async def list_models(user: Optional[UserResponse] = Depends(optional_auth)) -> 
         current = get_settings().model
 
         # Check adult mode status if user is authenticated
-        # Both Tier 1 (adult_mode_enabled) AND Tier 2 (full_unlock) required for uncensored models
+        # Only Tier 1 (passcode) required for uncensored models
+        # Tier 2 (/full_unlock) is for personality/content changes, not model filtering
         adult_mode = False
         if user:
             try:
                 profile_service = get_user_profile_service()
                 adult_status = await profile_service.get_adult_mode_status(user.id)
-                full_unlock_status = await profile_service.get_full_unlock_status(user.id)
-                # Both tiers required for uncensored models
-                adult_mode = (
-                    adult_status.get("enabled", False) and
-                    full_unlock_status.get("enabled", False)
-                )
+                adult_mode = adult_status.get("enabled", False)
             except Exception as e:
                 logger.debug(f"Could not get adult mode status: {e}")
 
@@ -170,7 +166,10 @@ async def get_usage_stats():
     return {"vram": vram_info}
 
 
-@router.get("/capabilities/{model_name}")
+@router.get("/capabilities/{model_name:path}")
 async def get_model_capabilities_endpoint(model_name: str):
-    """Get comprehensive capabilities for a specific model."""
+    """Get comprehensive capabilities for a specific model.
+
+    Note: Uses :path converter to allow model names with slashes (e.g., huihui_ai/model:tag)
+    """
     return await ollama_service.get_comprehensive_capabilities(model_name)

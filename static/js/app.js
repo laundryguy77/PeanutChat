@@ -34,8 +34,14 @@ class App {
         // Check if we already have a session ID for this tab
         let sessionId = sessionStorage.getItem('peanutchat_session_id');
         if (!sessionId) {
-            // Generate a new UUID-like session ID
-            sessionId = 'sess_' + crypto.randomUUID();
+            // Generate a new UUID-like session ID (with fallback for non-secure contexts)
+            const uuid = (typeof crypto.randomUUID === 'function')
+                ? crypto.randomUUID()
+                : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                    const r = Math.random() * 16 | 0;
+                    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+                });
+            sessionId = 'sess_' + uuid;
             sessionStorage.setItem('peanutchat_session_id', sessionId);
         }
         return sessionId;
@@ -126,11 +132,17 @@ class App {
         await this.loadConversations();
         await this.updateUsageGauges();
 
-        // Restore last conversation from sessionStorage (tab-scoped persistence)
-        const savedConvId = sessionStorage.getItem('currentConversationId');
-        if (savedConvId) {
-            await this.loadConversation(savedConvId);
+        // Initialize profile to get assistant name
+        if (typeof profileManager !== 'undefined') {
+            await profileManager.init();
+            this.updateAssistantName(profileManager.getAssistantName());
         }
+
+        // Clear any stored conversation ID on page load/refresh
+        // This ensures each refresh/new tab starts a fresh conversation
+        console.log('[Init] Clearing stored conversation ID - new session started');
+        sessionStorage.removeItem('currentConversationId');
+        this.currentConversationId = null;
 
         // Handle sidebar based on viewport
         this.handleViewportResize();
@@ -441,12 +453,14 @@ class App {
     }
 
     async loadModels() {
+        console.log('[loadModels] Starting model load...');
         const select = document.getElementById('model-select');
         try {
             const response = await fetch('/api/models', {
                 credentials: 'include'
             });
             const data = await response.json();
+            console.log('[loadModels] Got', data.models?.length, 'models, adult_mode:', data.adult_mode);
 
             // Filter out embedding models that cannot chat
             const chatModels = (data.models || []).filter(model => {
@@ -1078,6 +1092,56 @@ class App {
             this.chatManager.saveEdit();
         });
 
+    }
+
+    /**
+     * Update all locations that display the assistant name
+     * @param {string} name - The new assistant name
+     */
+    updateAssistantName(name) {
+        const displayName = name || 'PeanutChat';
+        console.log('[AssistantName] Updating assistant name to:', displayName);
+
+        // Update sidebar header
+        const sidebarHeader = document.querySelector('#sidebar h2.font-display');
+        if (sidebarHeader) {
+            sidebarHeader.textContent = displayName;
+        }
+
+        // Update welcome message if visible
+        const welcomeTitle = document.querySelector('.welcome-message h2');
+        if (welcomeTitle) {
+            welcomeTitle.textContent = `Welcome to ${displayName}`;
+        }
+
+        // Update input placeholder
+        const messageInput = document.getElementById('message-input');
+        if (messageInput) {
+            messageInput.placeholder = `Message ${displayName}...`;
+        }
+
+        // Update all existing assistant message headers
+        const assistantNameEls = document.querySelectorAll('.assistant-header .assistant-name');
+        assistantNameEls.forEach(el => {
+            el.textContent = displayName;
+        });
+
+        // Store for use by chat manager
+        this.assistantName = displayName;
+    }
+
+    /**
+     * Get the current assistant name
+     */
+    getAssistantName() {
+        // Try to get from profileManager first, fall back to cached value or default
+        if (typeof profileManager !== 'undefined' && profileManager.getAssistantName) {
+            const name = profileManager.getAssistantName();
+            console.log('[AssistantName] getAssistantName() from profile:', name);
+            return name;
+        }
+        console.log('[AssistantName] getAssistantName() fallback:', this.assistantName || 'PeanutChat');
+        return this.assistantName || 'PeanutChat';
     }
 
     async selectModel(model) {

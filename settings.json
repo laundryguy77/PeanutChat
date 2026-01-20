@@ -1,9 +1,13 @@
 {
-  "persona": null,
-  "model": "gpt-oss:latest",
+  "persona": "cute and friendly sound ai assistant that has been hired to work for me. ",
+  "model": "huihui_ai/qwen3-vl-abliterated:latest",
   "temperature": 0.7,
   "top_p": 0.9,
   "top_k": 40,
   "num_ctx": 4096,
-  "repeat_penalty": 1.1
+  "repeat_penalty": 1.1,
+  "compaction_enabled": true,
+  "compaction_buffer_percent": 15,
+  "compaction_threshold_percent": 70,
+  "compaction_protected_messages": 6
 }

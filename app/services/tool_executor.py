@@ -1,13 +1,21 @@
 from typing import Dict, Any, Optional, List
 import httpx
 import json
+import logging
 import socket
 import ipaddress
 import time
 from urllib.parse import urlparse
-from app.services.image_generator import image_generator
 from app.services.conversation_store import conversation_store
-from app.config import BRAVE_SEARCH_API_KEY
+from app.config import BRAVE_SEARCH_API_KEY, HF_TOKEN, VIDEO_GENERATION_SPACE
+from app.services.knowledge_base import get_knowledge_base
+from app.services.memory_service import get_memory_service
+from app.services.mcp_client import get_mcp_manager
+from app.services.user_profile_service import get_user_profile_service
+from app.services.image_backends import UnifiedImageGenerator
+from app.services.video_backends import VideoGenerator
+
+logger = logging.getLogger(__name__)
 
 # URL cache: {url: {"content": ..., "timestamp": ..., "status": ...}}
 _url_cache: Dict[str, Dict[str, Any]] = {}
@@ -18,10 +26,15 @@ class ToolExecutor:
     def __init__(self):
         self.image_registry: Dict[str, str] = {}  # Track shared images
         self.current_conversation_id: Optional[str] = None  # Current conversation for search
+        self.current_user_id: Optional[int] = None  # Current user for knowledge base
 
     def set_current_conversation(self, conv_id: str):
         """Set the current conversation ID for context-aware tools"""
         self.current_conversation_id = conv_id
+
+    def set_current_user(self, user_id: int):
+        """Set the current user ID for user-scoped tools"""
+        self.current_user_id = user_id
 
     def register_image(self, message_index: int, image_base64: str):
         """Register an image from a message for later tool use"""
@@ -60,14 +73,53 @@ class ToolExecutor:
             return await self._execute_web_search(arguments)
         elif name == "browse_website":
             return await self._execute_browse_website(arguments)
-        elif name == "generate_image":
-            return await self._execute_generate_image(arguments)
         elif name == "search_conversations":
             return await self._execute_conversation_search(arguments)
+        elif name == "search_knowledge_base":
+            return await self._execute_knowledge_search(arguments)
+        elif name == "add_memory":
+            return await self._execute_add_memory(arguments)
+        elif name == "query_memory":
+            return await self._execute_query_memory(arguments)
+        elif name == "set_conversation_title":
+            return await self._execute_set_conversation_title(arguments)
+        elif name == "generate_video":
+            return await self._execute_generate_video(arguments)
+        elif name == "text_to_image":
+            return await self._execute_text_to_image(arguments)
+        elif name == "image_to_image":
+            return await self._execute_image_to_image(arguments)
+        elif name == "inpaint_image":
+            return await self._execute_inpaint_image(arguments)
+        elif name == "upscale_image":
+            return await self._execute_upscale_image(arguments)
+        elif name == "text_to_video":
+            return await self._execute_text_to_video(arguments)
+        elif name == "image_to_video":
+            return await self._execute_image_to_video(arguments)
+        elif name == "user_profile_read":
+            return await self._execute_user_profile_read(arguments)
+        elif name == "user_profile_update":
+            return await self._execute_user_profile_update(arguments)
+        elif name == "user_profile_log_event":
+            return await self._execute_user_profile_log_event(arguments)
+        elif name == "user_profile_enable_section":
+            return await self._execute_user_profile_enable_section(arguments)
+        elif name == "user_profile_add_nested":
+            return await self._execute_user_profile_add_nested(arguments)
+        elif name == "user_profile_query":
+            return await self._execute_user_profile_query(arguments)
+        elif name == "user_profile_export":
+            return await self._execute_user_profile_export(arguments)
+        elif name == "user_profile_reset":
+            return await self._execute_user_profile_reset(arguments)
+        elif name.startswith("mcp_"):
+            # Route to MCP manager for MCP tools
+            return await self._execute_mcp_tool(name, arguments)
 
         # For unknown tools, return a helpful message instead of breaking
-        print(f"[TOOL] Unknown tool requested: {name}")
-        return {"error": f"Tool '{name}' is not available. Available tools: web_search, browse_website, search_conversations"}
+        logger.warning(f"Unknown tool requested: {name}")
+        return {"error": f"Tool '{name}' is not available. Available tools: web_search, browse_website, search_conversations, search_knowledge_base, add_memory, query_memory"}
 
     async def _execute_web_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Execute web search and fetch top results for comprehensive answers"""
@@ -99,7 +151,7 @@ class ToolExecutor:
                 if not url:
                     continue
 
-                print(f"[WEB SEARCH] Fetching result {i+1}/3: {url}")
+                logger.info(f"Web search fetching result {i+1}/3: {url}")
                 fetch_result = await self._fetch_url_content(url)
 
                 if fetch_result.get("success"):
@@ -119,13 +171,13 @@ class ToolExecutor:
 
             # Step 3: If we got less than 2 successful fetches, try next 3
             if pages_fetched < 2 and len(search_results) > 3:
-                print(f"[WEB SEARCH] Only {pages_fetched} pages fetched, trying next batch...")
+                logger.info(f"Only {pages_fetched} pages fetched, trying next batch...")
                 for i, result in enumerate(search_results[3:6]):
                     url = result.get("url", "")
                     if not url:
                         continue
 
-                    print(f"[WEB SEARCH] Fetching result {i+4}/6: {url}")
+                    logger.info(f"Web search fetching result {i+4}/6: {url}")
                     fetch_result = await self._fetch_url_content(url)
 
                     if fetch_result.get("success"):
@@ -136,7 +188,7 @@ class ToolExecutor:
                         })
                         pages_fetched += 1
 
-            print(f"[WEB SEARCH] Completed with {pages_fetched} pages fetched, {len(fetched_content)} total results")
+            logger.info(f"Web search completed: {pages_fetched} pages fetched, {len(fetched_content)} total results")
 
             return {
                 "success": True,
@@ -177,7 +229,7 @@ class ToolExecutor:
         if url in _url_cache:
             cached = _url_cache[url]
             if time.time() - cached["timestamp"] < URL_CACHE_TTL:
-                print(f"[BROWSE] Cache hit for: {url}")
+                logger.debug(f"Cache hit for: {url}")
                 return cached
             else:
                 # Expired, remove from cache
@@ -250,7 +302,7 @@ class ToolExecutor:
                 "cached": True
             }
 
-        print(f"[BROWSE] Fetching: {url}")
+        logger.info(f"Browsing URL: {url}")
 
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, max_redirects=5) as client:
@@ -309,7 +361,7 @@ class ToolExecutor:
                 # Cache the result
                 self._cache_url(url, result)
 
-                print(f"[BROWSE] Success: {len(content)} characters extracted")
+                logger.debug(f"Browse success: {len(content)} characters extracted")
 
                 return result
 
@@ -334,7 +386,7 @@ class ToolExecutor:
 
     async def _brave_search(self, query: str, num_results: int) -> List[Dict[str, str]]:
         """Perform Brave Search and return results"""
-        print(f"[BRAVE SEARCH] Executing search for: {query}")
+        logger.info(f"Brave search: {query}")
         results = []
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -363,11 +415,11 @@ class ToolExecutor:
                             "snippet": result.get("description", ""),
                             "source": "Brave Search"
                         })
-                    print(f"[BRAVE SEARCH] Found {len(results)} results")
+                    logger.info(f"Brave search found {len(results)} results")
                 else:
-                    print(f"[BRAVE SEARCH] API error: {response.status_code} - {response.text}")
+                    logger.error(f"Brave API error: {response.status_code} - {response.text}")
             except Exception as e:
-                print(f"Brave Search API error: {e}")
+                logger.error(f"Brave Search API error: {e}")
 
         # If no results, return a message
         if not results:
@@ -389,7 +441,7 @@ class ToolExecutor:
                 "success": False
             }
 
-        print(f"[FETCH URL] Fetching: {url}")
+        logger.debug(f"Fetching URL: {url}")
 
         try:
             async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
@@ -405,7 +457,7 @@ class ToolExecutor:
                 response = await client.get(url, headers=headers)
 
                 if response.status_code != 200:
-                    print(f"[FETCH URL] HTTP {response.status_code} for {url}")
+                    logger.debug(f"Fetch URL HTTP {response.status_code} for {url}")
                     return {
                         "error": f"Failed to fetch URL: HTTP {response.status_code}",
                         "success": False
@@ -427,7 +479,7 @@ class ToolExecutor:
                 if len(text) > 8000:
                     text = text[:8000] + "\n\n[Content truncated...]"
 
-                print(f"[FETCH URL] Extracted {len(text)} characters")
+                logger.debug(f"Extracted {len(text)} characters from URL")
 
                 return {
                     "success": True,
@@ -437,10 +489,10 @@ class ToolExecutor:
                 }
 
         except httpx.TimeoutException:
-            print(f"[FETCH URL] Timeout for {url}")
+            logger.debug(f"Timeout fetching {url}")
             return {"error": "Request timed out", "success": False}
         except Exception as e:
-            print(f"[FETCH URL] Error for {url}: {e}")
+            logger.debug(f"Error fetching {url}: {e}")
             return {"error": f"Failed to fetch URL: {str(e)}", "success": False}
 
     def _extract_text_from_html(self, html: str) -> str:
@@ -490,7 +542,7 @@ class ToolExecutor:
             }
 
         try:
-            print(f"[CONV SEARCH] Searching for: {query}")
+            logger.info(f"Conversation search: {query}")
             results = conversation_store.search_conversations(
                 query=query,
                 exclude_conv_id=self.current_conversation_id,
@@ -506,7 +558,7 @@ class ToolExecutor:
                     "num_results": 0
                 }
 
-            print(f"[CONV SEARCH] Found {len(results)} results")
+            logger.info(f"Conversation search found {len(results)} results")
 
             # Format results for the model
             formatted_results = []
@@ -527,72 +579,666 @@ class ToolExecutor:
             }
 
         except Exception as e:
-            print(f"[CONV SEARCH] Error: {e}")
+            logger.error(f"Conversation search error: {e}")
             return {
                 "error": f"Search failed: {str(e)}",
                 "success": False
             }
 
-    async def _execute_generate_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute image generation tool"""
-        prompt = args.get("prompt", "")
-        if not prompt:
+    async def _execute_knowledge_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Search the user's knowledge base for relevant documents"""
+        query = args.get("query", "")
+
+        if not query:
             return {
-                "error": "A prompt describing the image is required.",
+                "error": "Search query is required.",
                 "success": False
             }
 
-        # Style modifiers
-        style_modifiers = {
-            "photorealistic": ", photorealistic, highly detailed, 8k, professional photography",
-            "artistic": ", artistic, creative, expressive brushwork, fine art",
-            "anime": ", anime style, manga art, vibrant colors, detailed",
-            "digital_art": ", digital art, concept art, detailed illustration",
-            "oil_painting": ", oil painting, classical art style, rich colors, textured",
-            "watercolor": ", watercolor painting, soft edges, flowing colors",
-            "sketch": ", pencil sketch, hand-drawn, detailed linework"
-        }
-
-        # Apply style modifier if specified
-        style = args.get("style")
-        if style and style in style_modifiers:
-            prompt += style_modifiers[style]
-
-        # Get dimensions (ensure divisible by 8)
-        width = args.get("width", 1024)
-        height = args.get("height", 1024)
-        width = max(512, min(1536, (width // 8) * 8))
-        height = max(512, min(1536, (height // 8) * 8))
-
-        negative_prompt = args.get("negative_prompt")
+        if not self.current_user_id:
+            return {
+                "success": True,
+                "query": query,
+                "message": "Knowledge base search requires authentication.",
+                "results": [],
+                "num_results": 0
+            }
 
         try:
-            result = await image_generator.generate(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                width=width,
-                height=height
+            logger.info(f"Knowledge base search: {query}")
+            kb = get_knowledge_base()
+            results = await kb.search(
+                user_id=self.current_user_id,
+                query=query,
+                top_k=5,
+                threshold=0.3
             )
 
-            if result.get("success"):
+            if not results:
                 return {
                     "success": True,
-                    "image_url": result["url"],
-                    "image_id": result["image_id"],
-                    "message": f"Image generated successfully! You can view it at {result['url']}",
+                    "query": query,
+                    "message": "No matching content found in your knowledge base. You may need to upload relevant documents first.",
+                    "results": [],
+                    "num_results": 0
+                }
+
+            logger.info(f"Knowledge base search found {len(results)} results")
+
+            # Format results for the model
+            formatted_results = []
+            for r in results:
+                formatted_results.append({
+                    "filename": r["filename"],
+                    "content": r["content"][:1000],  # Limit content length
+                    "similarity": r["similarity"],
+                    "chunk_index": r["chunk_index"]
+                })
+
+            return {
+                "success": True,
+                "query": query,
+                "results": formatted_results,
+                "num_results": len(formatted_results),
+                "message": f"Found {len(formatted_results)} relevant excerpts from your uploaded documents."
+            }
+
+        except Exception as e:
+            logger.error(f"Knowledge base search error: {e}")
+            return {
+                "error": f"Search failed: {str(e)}",
+                "success": False
+            }
+
+    async def _execute_add_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Add information to user's memory."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        memory_service = get_memory_service()
+        result = await memory_service.add_memory(
+            user_id=self.current_user_id,
+            content=args.get("content", ""),
+            category=args.get("category", "general"),
+            importance=args.get("importance", 5),
+            source="inferred"
+        )
+        return result
+
+    async def _execute_query_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Query user's memory."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        memory_service = get_memory_service()
+        results = await memory_service.query_memories(
+            user_id=self.current_user_id,
+            query=args.get("query", ""),
+            top_k=5
+        )
+        return {
+            "success": True,
+            "query": args.get("query", ""),
+            "results": results,
+            "count": len(results)
+        }
+
+    async def _execute_set_conversation_title(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Set the title of the current conversation."""
+        title = args.get("title", "").strip()
+
+        if not title:
+            return {"success": False, "error": "Title is required"}
+
+        if not self.current_conversation_id:
+            return {"success": False, "error": "No active conversation"}
+
+        # Limit title length
+        if len(title) > 100:
+            title = title[:100]
+
+        try:
+            success = await conversation_store.rename(self.current_conversation_id, title)
+            if success:
+                logger.info(f"Conversation title set to: {title}")
+                return {
+                    "success": True,
+                    "title": title,
+                    "message": f"Conversation title updated to: {title}"
+                }
+            else:
+                return {"success": False, "error": "Failed to update conversation title"}
+        except Exception as e:
+            logger.error(f"Error setting conversation title: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_generate_video(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate a video using Hugging Face Spaces."""
+        import asyncio
+
+        prompt = args.get("prompt", "").strip()
+        duration = args.get("duration", 4)
+
+        if not prompt:
+            return {"success": False, "error": "Prompt is required"}
+
+        # Inject avatar style from profile for consistent character
+        if self.current_user_id:
+            try:
+                profile_service = get_user_profile_service()
+                profile_data = await profile_service.get_profile(self.current_user_id)
+                if profile_data:
+                    profile = profile_data.get("profile", {})
+                    persona = profile.get("persona_preferences", {})
+                    avatar_style = persona.get("avatar_style_tags")
+                    if avatar_style:
+                        prompt = f"{avatar_style}. {prompt}"
+                        logger.debug(f"Injected avatar style into video prompt: {avatar_style}")
+            except Exception as e:
+                logger.warning(f"Failed to get avatar style for video generation: {e}")
+
+        # Validate duration
+        duration = max(2, min(10, duration))
+
+        if not VIDEO_GENERATION_SPACE:
+            return {"success": False, "error": "Video generation is not configured. Set VIDEO_GENERATION_SPACE in environment."}
+
+        logger.info(f"Generating video with prompt: {prompt[:100]}...")
+
+        try:
+            # Import gradio_client dynamically to avoid startup dependency
+            from gradio_client import Client
+
+            # Run the synchronous gradio client in a thread pool
+            loop = asyncio.get_event_loop()
+
+            def generate_sync():
+                try:
+                    # Create client with optional auth token
+                    if HF_TOKEN:
+                        client = Client(VIDEO_GENERATION_SPACE, hf_token=HF_TOKEN)
+                    else:
+                        client = Client(VIDEO_GENERATION_SPACE)
+
+                    # Call the predict method with the prompt
+                    # Note: API may vary by space, this handles common patterns
+                    result = client.predict(
+                        prompt,
+                        api_name="/predict"
+                    )
+                    return result
+                except Exception as e:
+                    # Try alternative API endpoint
+                    try:
+                        if HF_TOKEN:
+                            client = Client(VIDEO_GENERATION_SPACE, hf_token=HF_TOKEN)
+                        else:
+                            client = Client(VIDEO_GENERATION_SPACE)
+                        result = client.predict(
+                            prompt,
+                            api_name="/generate"
+                        )
+                        return result
+                    except:
+                        raise e
+
+            # Execute with 120 second timeout for video generation
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, generate_sync),
+                timeout=120.0
+            )
+
+            # Handle various result formats
+            video_url = None
+            if isinstance(result, str):
+                video_url = result
+            elif isinstance(result, dict):
+                video_url = result.get("video") or result.get("url") or result.get("output")
+            elif isinstance(result, (list, tuple)) and len(result) > 0:
+                video_url = result[0] if isinstance(result[0], str) else result[0].get("url", result[0])
+
+            if video_url:
+                logger.info(f"Video generated successfully: {video_url[:100]}...")
+                return {
+                    "success": True,
+                    "video_url": video_url,
                     "prompt": prompt,
-                    "seed": result.get("seed")
+                    "duration": duration,
+                    "message": f"Video generated successfully. URL: {video_url}"
                 }
             else:
                 return {
                     "success": False,
-                    "error": result.get("error", "Image generation failed")
+                    "error": "Video generation completed but no URL was returned",
+                    "raw_result": str(result)[:500]
                 }
-        except Exception as e:
+
+        except asyncio.TimeoutError:
             return {
                 "success": False,
-                "error": f"Image generation error: {str(e)}"
+                "error": "Video generation timed out after 120 seconds. The service may be busy, please try again later."
             }
+        except ImportError:
+            return {
+                "success": False,
+                "error": "gradio-client is not installed. Run: pip install gradio-client"
+            }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Video generation error: {error_msg}")
+
+            # Provide helpful error messages
+            if "429" in error_msg or "rate" in error_msg.lower():
+                return {"success": False, "error": "Rate limit exceeded. Please wait and try again later."}
+            elif "401" in error_msg or "403" in error_msg:
+                return {"success": False, "error": "Authentication failed. Check HF_TOKEN in environment."}
+            elif "queue" in error_msg.lower():
+                return {"success": False, "error": "The video generation service is currently busy. Please try again later."}
+            else:
+                return {"success": False, "error": f"Video generation failed: {error_msg[:200]}"}
+
+    async def _get_avatar_style_prefix(self) -> str:
+        """Get avatar style from user profile for consistent character generation."""
+        if not self.current_user_id:
+            return ""
+        try:
+            profile_service = get_user_profile_service()
+            profile_data = await profile_service.get_profile(self.current_user_id)
+            if profile_data:
+                profile = profile_data.get("profile", {})
+                persona = profile.get("persona_preferences", {})
+                avatar_style = persona.get("avatar_style_tags")
+                if avatar_style:
+                    return avatar_style
+        except Exception as e:
+            logger.warning(f"Failed to get avatar style: {e}")
+        return ""
+
+    async def _execute_text_to_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate an image from text using HuggingFace Spaces (FLUX.1/SD)."""
+        import tempfile
+
+        prompt = args.get("prompt", "").strip()
+        if not prompt:
+            return {"success": False, "error": "Prompt is required"}
+
+        # Inject avatar style from profile for consistent character
+        avatar_style = await self._get_avatar_style_prefix()
+        if avatar_style:
+            prompt = f"{avatar_style}. {prompt}"
+            logger.debug(f"Injected avatar style into image prompt: {avatar_style}")
+
+        logger.info(f"Text-to-image generation with prompt: {prompt[:100]}...")
+
+        try:
+            async with UnifiedImageGenerator(headless=True) as gen:
+                result = await gen.text_to_image(
+                    prompt=prompt,
+                    negative_prompt=args.get("negative_prompt", ""),
+                    width=args.get("width", 1024),
+                    height=args.get("height", 1024),
+                    return_base64=True
+                )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "base64": result["base64"],
+                    "mime_type": result.get("mime_type", "image/png"),
+                    "message": "Image generated successfully"
+                }
+            return result
+        except Exception as e:
+            logger.error(f"Text-to-image generation error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_image_to_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform an image based on a text prompt."""
+        import tempfile
+        import base64
+        import os
+
+        image_base64 = args.get("image_base64", "")
+        prompt = args.get("prompt", "").strip()
+
+        if not image_base64:
+            return {"success": False, "error": "image_base64 is required"}
+        if not prompt:
+            return {"success": False, "error": "prompt is required"}
+
+        # Inject avatar style from profile
+        avatar_style = await self._get_avatar_style_prefix()
+        if avatar_style:
+            prompt = f"{avatar_style}. {prompt}"
+
+        logger.info(f"Image-to-image transformation with prompt: {prompt[:100]}...")
+
+        try:
+            # Save base64 image to temp file
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(base64.b64decode(image_base64))
+                temp_image_path = f.name
+
+            try:
+                async with UnifiedImageGenerator(headless=True) as gen:
+                    result = await gen.image_to_image(
+                        image_path=temp_image_path,
+                        prompt=prompt,
+                        negative_prompt=args.get("negative_prompt", ""),
+                        strength=args.get("strength", 0.7),
+                        return_base64=True
+                    )
+            finally:
+                os.unlink(temp_image_path)
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "base64": result["base64"],
+                    "mime_type": result.get("mime_type", "image/png"),
+                    "message": "Image transformed successfully"
+                }
+            return result
+        except Exception as e:
+            logger.error(f"Image-to-image error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_inpaint_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Inpaint regions of an image based on a mask."""
+        import tempfile
+        import base64
+        import os
+
+        image_base64 = args.get("image_base64", "")
+        mask_base64 = args.get("mask_base64", "")
+        prompt = args.get("prompt", "").strip()
+
+        if not image_base64:
+            return {"success": False, "error": "image_base64 is required"}
+        if not mask_base64:
+            return {"success": False, "error": "mask_base64 is required"}
+        if not prompt:
+            return {"success": False, "error": "prompt is required"}
+
+        # Inject avatar style from profile
+        avatar_style = await self._get_avatar_style_prefix()
+        if avatar_style:
+            prompt = f"{avatar_style}. {prompt}"
+
+        logger.info(f"Inpainting with prompt: {prompt[:100]}...")
+
+        try:
+            # Save base64 images to temp files
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(base64.b64decode(image_base64))
+                temp_image_path = f.name
+
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(base64.b64decode(mask_base64))
+                temp_mask_path = f.name
+
+            try:
+                async with UnifiedImageGenerator(headless=True) as gen:
+                    result = await gen.inpaint(
+                        image_path=temp_image_path,
+                        mask_path=temp_mask_path,
+                        prompt=prompt,
+                        negative_prompt=args.get("negative_prompt", ""),
+                        return_base64=True
+                    )
+            finally:
+                os.unlink(temp_image_path)
+                os.unlink(temp_mask_path)
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "base64": result["base64"],
+                    "mime_type": result.get("mime_type", "image/png"),
+                    "message": "Image inpainted successfully"
+                }
+            return result
+        except Exception as e:
+            logger.error(f"Inpaint error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_upscale_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Upscale an image using AI enhancement."""
+        import tempfile
+        import base64
+        import os
+
+        image_base64 = args.get("image_base64", "")
+        if not image_base64:
+            return {"success": False, "error": "image_base64 is required"}
+
+        scale = args.get("scale", 2.0)
+        logger.info(f"Upscaling image with scale factor: {scale}")
+
+        try:
+            # Save base64 image to temp file
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(base64.b64decode(image_base64))
+                temp_image_path = f.name
+
+            try:
+                async with UnifiedImageGenerator(headless=True) as gen:
+                    result = await gen.upscale(
+                        image_path=temp_image_path,
+                        scale=scale,
+                        return_base64=True
+                    )
+            finally:
+                os.unlink(temp_image_path)
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "base64": result["base64"],
+                    "mime_type": result.get("mime_type", "image/png"),
+                    "message": f"Image upscaled successfully ({scale}x)"
+                }
+            return result
+        except Exception as e:
+            logger.error(f"Upscale error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_text_to_video(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate video from text using HuggingFace Spaces via Playwright."""
+        prompt = args.get("prompt", "").strip()
+        if not prompt:
+            return {"success": False, "error": "Prompt is required"}
+
+        negative_prompt = args.get("negative_prompt", "")
+        duration = args.get("duration", 3.0)
+
+        logger.info(f"Text-to-video generation: {prompt[:100]}...")
+
+        try:
+            async with VideoGenerator(headless=True, timeout=300000) as gen:
+                result = await gen.text_to_video(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    duration=duration,
+                    return_base64=True
+                )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "base64": result.get("base64"),
+                    "mime_type": "video/mp4",
+                    "size_bytes": result.get("size_bytes"),
+                    "message": "Video generated successfully"
+                }
+            return result
+        except Exception as e:
+            logger.error(f"Text-to-video error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_image_to_video(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Animate an image into video using HuggingFace Spaces via Playwright."""
+        import os
+        image_path = args.get("image_path", "").strip()
+        if not image_path:
+            return {"success": False, "error": "Image path is required"}
+
+        if not os.path.exists(image_path):
+            return {"success": False, "error": f"Image not found: {image_path}"}
+
+        prompt = args.get("prompt", "")
+        negative_prompt = args.get("negative_prompt", "")
+
+        logger.info(f"Image-to-video generation: {image_path}")
+
+        try:
+            async with VideoGenerator(headless=True, timeout=300000) as gen:
+                result = await gen.image_to_video(
+                    image_path=image_path,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    return_base64=True
+                )
+
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "base64": result.get("base64"),
+                    "mime_type": "video/mp4",
+                    "size_bytes": result.get("size_bytes"),
+                    "message": "Video generated successfully from image"
+                }
+            return result
+        except Exception as e:
+            logger.error(f"Image-to-video error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_mcp_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute an MCP tool via the MCP manager."""
+        logger.info(f"Executing MCP tool: {tool_name}")
+        mcp_manager = get_mcp_manager()
+        result = await mcp_manager.call_tool(tool_name, args)
+        logger.info(f"MCP tool result: {result}")
+        return result
+
+    # User Profile Tool Executors
+
+    async def _execute_user_profile_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read user profile sections."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        profile_service = get_user_profile_service()
+        sections = args.get("sections", ["all"])
+        include_disabled = args.get("include_disabled", False)
+
+        result = await profile_service.read_sections(
+            user_id=self.current_user_id,
+            sections=sections,
+            include_disabled=include_disabled
+        )
+        return {"success": True, "profile": result}
+
+    async def _execute_user_profile_update(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Update user profile fields."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        profile_service = get_user_profile_service()
+        updates = args.get("updates", [])
+        reason = args.get("reason", "AI-initiated update")
+
+        result = await profile_service.update_profile(
+            user_id=self.current_user_id,
+            updates=updates,
+            reason=reason
+        )
+        return {"success": True, "updated": True}
+
+    async def _execute_user_profile_log_event(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Log an interaction event."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        profile_service = get_user_profile_service()
+        result = await profile_service.log_event(
+            user_id=self.current_user_id,
+            event_type=args.get("event_type"),
+            context=args.get("context"),
+            severity=args.get("severity", "moderate")
+        )
+        return result
+
+    async def _execute_user_profile_enable_section(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Enable or disable a sensitive section."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        profile_service = get_user_profile_service()
+        result = await profile_service.enable_section(
+            user_id=self.current_user_id,
+            section=args.get("section"),
+            user_confirmed=args.get("user_confirmed", False),
+            enabled=args.get("enabled", True)
+        )
+        return result
+
+    async def _execute_user_profile_add_nested(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Add to a nested section."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        profile_service = get_user_profile_service()
+        result = await profile_service.add_nested(
+            user_id=self.current_user_id,
+            section=args.get("section"),
+            domain=args.get("domain"),
+            key=args.get("key"),
+            value=args.get("value")
+        )
+        return result
+
+    async def _execute_user_profile_query(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Query the user profile."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        profile_service = get_user_profile_service()
+        result = await profile_service.query_profile(
+            user_id=self.current_user_id,
+            query=args.get("query", "")
+        )
+        return result
+
+    async def _execute_user_profile_export(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Export user profile."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        profile_service = get_user_profile_service()
+        result = await profile_service.export_profile(
+            user_id=self.current_user_id,
+            format=args.get("format", "json"),
+            tier=args.get("tier", "exportable"),
+            user_confirmed=args.get("user_confirmed", False)
+        )
+        return {"success": True, "export": result}
+
+    async def _execute_user_profile_reset(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Reset user profile sections."""
+        if not self.current_user_id:
+            return {"success": False, "error": "User not authenticated"}
+
+        if not args.get("user_confirmed"):
+            return {"success": False, "error": "User confirmation required for reset"}
+
+        profile_service = get_user_profile_service()
+        result = await profile_service.reset_profile(
+            user_id=self.current_user_id,
+            sections=args.get("sections", []),
+            preserve_identity=args.get("preserve_identity", True)
+        )
+        return {"success": True, "reset": True}
 
 
 # Global executor instance

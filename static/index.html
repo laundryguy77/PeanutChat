@@ -9,11 +9,11 @@
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Noto+Sans:wght@400;500;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
     <!-- Syntax highlighting theme -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
     <!-- Markdown parser -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
     <!-- Syntax highlighting -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com?plugins=forms"></script>
     <script>
@@ -145,6 +145,14 @@
         /* Hide scrollbar but keep functionality */
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* Enable text selection in message content */
+        .prose, .prose *, .message-content, .message-content * {
+            user-select: text;
+            -webkit-user-select: text;
+            -moz-user-select: text;
+            -ms-user-select: text;
+        }
     </style>
 </head>
 <body class="bg-background-dark text-white font-body flex overflow-hidden selection:bg-primary selection:text-white" style="height: var(--app-height);">
@@ -172,22 +180,50 @@
             </button>
         </div>
 
+        <!-- Search Bar -->
+        <div class="px-3 pb-2">
+            <div class="relative">
+                <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-lg">search</span>
+                <input type="text" id="conversation-search"
+                       class="w-full bg-surface-dark/50 border border-gray-700 rounded-lg py-2 pl-10 pr-8 text-sm text-white placeholder-gray-500 focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all"
+                       placeholder="Search conversations...">
+                <button id="clear-search" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white hidden">
+                    <span class="material-symbols-outlined text-sm">close</span>
+                </button>
+            </div>
+        </div>
+
         <!-- Conversation List -->
         <div class="flex-1 overflow-y-auto px-3 py-2 space-y-1" id="conversation-list">
             <!-- Conversations loaded dynamically -->
         </div>
 
         <!-- User Profile / Settings -->
-        <div class="p-4 border-t border-gray-800 bg-sidebar-dark/50">
+        <div class="p-4 border-t border-gray-800 bg-sidebar-dark/50 space-y-2">
+            <!-- User Info (shown when logged in) -->
+            <div id="user-info" class="hidden">
+                <div class="flex items-center gap-3 p-2">
+                    <div class="size-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white shadow-inner">
+                        <span class="material-symbols-outlined text-lg">person</span>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-medium text-white truncate" id="user-display-name">User</div>
+                        <div class="text-xs text-gray-500 truncate">Logged in</div>
+                    </div>
+                    <button id="logout-btn" class="text-gray-500 hover:text-red-400 transition-colors" title="Logout">
+                        <span class="material-symbols-outlined text-lg">logout</span>
+                    </button>
+                </div>
+            </div>
+            <!-- Settings Button -->
             <button class="flex items-center gap-3 w-full p-2 rounded-xl hover:bg-surface-dark/50 transition-colors text-left group" id="settings-btn">
-                <div class="size-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white shadow-inner">
-                    <span class="material-symbols-outlined text-lg">person</span>
+                <div class="size-9 rounded-full bg-surface-dark flex items-center justify-center text-gray-400 group-hover:text-white transition-colors">
+                    <span class="material-symbols-outlined text-lg">settings</span>
                 </div>
                 <div class="flex-1 min-w-0">
                     <div class="text-sm font-medium text-white truncate group-hover:text-primary transition-colors">Settings</div>
                     <div class="text-xs text-gray-500 truncate">Preferences & Config</div>
                 </div>
-                <span class="material-symbols-outlined text-gray-500 group-hover:text-white transition-colors">settings</span>
             </button>
         </div>
     </aside>
@@ -213,6 +249,37 @@
                     <select class="appearance-none bg-surface-dark hover:bg-surface-darker border border-gray-700 hover:border-gray-600 rounded-lg py-1.5 px-3 pr-8 text-sm font-medium transition-all min-w-[140px] md:min-w-[180px] text-gray-200 cursor-pointer" id="model-select">
                         <option value="">Loading...</option>
                     </select>
+                </div>
+                <!-- Model Capability Indicators -->
+                <div id="model-capabilities" class="flex items-center gap-1">
+                    <span id="cap-tools" class="hidden p-1 rounded bg-surface-dark border border-gray-700" title="Tools available (web search, knowledge base)">
+                        <span class="material-symbols-outlined text-sm text-green-400">build</span>
+                    </span>
+                    <span id="cap-vision" class="hidden p-1 rounded bg-surface-dark border border-gray-700" title="Vision capable (can analyze images)">
+                        <span class="material-symbols-outlined text-sm text-blue-400">visibility</span>
+                    </span>
+                    <span id="cap-thinking" class="hidden p-1 rounded bg-surface-dark border border-gray-700" title="Extended thinking mode">
+                        <span class="material-symbols-outlined text-sm text-purple-400">psychology</span>
+                    </span>
+                </div>
+                <!-- Usage Gauges -->
+                <div id="usage-gauges" class="flex items-center gap-3 ml-3 pl-3 border-l border-gray-700">
+                    <!-- Context Usage -->
+                    <div class="flex items-center gap-1.5" title="Context window usage">
+                        <span class="material-symbols-outlined text-xs text-gray-500">memory</span>
+                        <div class="w-12 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div id="context-gauge" class="h-full bg-primary transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <span id="context-label" class="text-xs text-gray-500 w-7">0%</span>
+                    </div>
+                    <!-- VRAM Usage -->
+                    <div id="vram-gauge-container" class="flex items-center gap-1.5 hidden" title="GPU VRAM usage">
+                        <span class="material-symbols-outlined text-xs text-gray-500">developer_board</span>
+                        <div class="w-12 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div id="vram-gauge" class="h-full bg-green-500 transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <span id="vram-label" class="text-xs text-gray-500 w-7">0%</span>
+                    </div>
                 </div>
             </div>
         </header>
@@ -246,7 +313,7 @@
                     <div class="flex items-end gap-2">
                         <!-- Plus/Attach Button with Menu -->
                         <div class="relative" id="tools-menu-container">
-                            <button class="p-3 text-gray-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors" id="tools-btn" title="Attach files & options">
+                            <button type="button" class="p-3 text-gray-400 hover:text-white hover:bg-white/10 rounded-xl transition-colors" id="tools-btn" title="Attach files & options">
                                 <span class="material-symbols-outlined">add_circle</span>
                             </button>
                             <!-- Tools Menu -->
@@ -318,6 +385,17 @@
 
             <!-- Scrollable Content -->
             <div class="flex-1 overflow-y-auto">
+                <!-- User Profile Section -->
+                <div class="p-6 border-b border-gray-700">
+                    <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                        <span class="material-symbols-outlined text-lg">person</span>
+                        User Profile
+                    </h3>
+                    <div id="profile-section">
+                        <p class="text-xs text-gray-500">Loading profile...</p>
+                    </div>
+                </div>
+
                 <!-- Theme Section -->
                 <div class="p-6 border-b border-gray-700">
                     <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Theme</h3>
@@ -346,6 +424,114 @@
                     <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Persona</h3>
                     <textarea id="persona-input" class="w-full bg-background-dark border border-gray-700 rounded-xl p-4 text-white placeholder-gray-500 text-sm resize-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all" rows="3" placeholder="Describe the persona the AI should embody..."></textarea>
                     <p class="text-xs text-gray-500 mt-2">Example: "You are a friendly pirate captain who loves to tell stories about the sea."</p>
+                </div>
+
+                <!-- Knowledge Base Section -->
+                <div class="p-6 border-b border-gray-700">
+                    <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Knowledge Base</h3>
+                    <p class="text-xs text-gray-500 mb-4">Upload documents for the AI to reference. Supports PDF, text, code files, and more.</p>
+
+                    <!-- Stats -->
+                    <div class="flex gap-4 mb-4">
+                        <div class="flex-1 bg-background-dark rounded-xl p-3 text-center">
+                            <div class="text-2xl font-bold text-primary" id="kb-doc-count">0</div>
+                            <div class="text-xs text-gray-500">Documents</div>
+                        </div>
+                        <div class="flex-1 bg-background-dark rounded-xl p-3 text-center">
+                            <div class="text-2xl font-bold text-primary" id="kb-chunk-count">0</div>
+                            <div class="text-xs text-gray-500">Chunks</div>
+                        </div>
+                    </div>
+
+                    <!-- Upload Area -->
+                    <div id="kb-upload-area" class="border-2 border-dashed border-gray-700 rounded-xl p-6 text-center hover:border-primary/50 transition-colors cursor-pointer mb-4">
+                        <span class="material-symbols-outlined text-4xl text-gray-500 mb-2">upload_file</span>
+                        <p class="text-sm text-gray-400">Drop files here or click to upload</p>
+                        <p class="text-xs text-gray-500 mt-1">Max 150MB per file</p>
+                        <input type="file" id="kb-file-input" class="hidden" multiple accept=".pdf,.txt,.md,.py,.js,.ts,.json,.html,.css,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.csv,.xml,.log">
+                    </div>
+
+                    <!-- Upload Progress -->
+                    <div id="kb-upload-progress" class="hidden mb-4">
+                        <div class="flex items-center gap-2 text-sm text-gray-400">
+                            <span class="material-symbols-outlined animate-spin text-primary">progress_activity</span>
+                            <span id="kb-upload-status">Uploading...</span>
+                        </div>
+                    </div>
+
+                    <!-- Document List -->
+                    <div id="kb-documents" class="space-y-2 max-h-48 overflow-y-auto">
+                        <!-- Documents will be rendered here -->
+                    </div>
+                </div>
+
+                <!-- MCP Servers Section -->
+                <div class="p-6 border-b border-gray-700">
+                    <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                        <span class="material-symbols-outlined text-lg">extension</span>
+                        MCP Servers
+                    </h3>
+                    <p class="text-xs text-gray-500 mb-4">
+                        Connect external tool servers to extend the AI's capabilities via the Model Context Protocol.
+                    </p>
+
+                    <!-- Server List -->
+                    <div id="mcp-servers" class="space-y-2 max-h-48 overflow-y-auto mb-4">
+                        <!-- Servers will be rendered here -->
+                    </div>
+
+                    <!-- Add Server Button -->
+                    <button
+                        id="add-mcp-server"
+                        onclick="mcpManager.showAddModal()"
+                        class="flex items-center gap-2 text-sm text-primary hover:text-primary-hover transition-colors"
+                    >
+                        <span class="material-symbols-outlined text-sm">add_circle</span>
+                        Add MCP Server
+                    </button>
+                </div>
+
+                <!-- Memory Section -->
+                <div class="p-6 border-b border-gray-700">
+                    <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                        <span class="material-symbols-outlined text-lg">psychology</span>
+                        Memory
+                    </h3>
+                    <p class="text-xs text-gray-500 mb-4">
+                        The AI learns about you over time. View and manage what it remembers.
+                    </p>
+
+                    <!-- Stats -->
+                    <div class="flex gap-4 mb-4">
+                        <div class="flex-1 bg-background-dark rounded-xl p-3 text-center">
+                            <div class="text-2xl font-bold text-primary" id="memory-count">0</div>
+                            <div class="text-xs text-gray-500">Memories</div>
+                        </div>
+                        <div class="flex-1 bg-background-dark rounded-xl p-3 text-center">
+                            <div class="text-2xl font-bold text-primary" id="memory-categories">0</div>
+                            <div class="text-xs text-gray-500">Categories</div>
+                        </div>
+                    </div>
+
+                    <!-- Memory List (expandable) -->
+                    <details class="mb-4">
+                        <summary class="text-sm text-gray-400 cursor-pointer hover:text-white transition-colors flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">expand_more</span>
+                            View all memories
+                        </summary>
+                        <div id="memory-list" class="mt-3 max-h-64 overflow-y-auto">
+                            <!-- Populated by memory.js -->
+                        </div>
+                    </details>
+
+                    <!-- Clear All Button -->
+                    <button
+                        onclick="memoryManager.clearAllMemories()"
+                        class="flex items-center gap-2 text-xs text-red-400 hover:text-red-300 transition-colors"
+                    >
+                        <span class="material-symbols-outlined text-sm">delete_forever</span>
+                        Clear all memories
+                    </button>
                 </div>
 
                 <!-- Model Parameters Section -->
@@ -414,6 +600,68 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Context Compaction Section -->
+                <div class="p-6 border-t border-gray-700">
+                    <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                        <span class="material-symbols-outlined text-lg">compress</span>
+                        Context Compaction
+                    </h3>
+                    <p class="text-xs text-gray-500 mb-4">
+                        Automatically summarize older messages to extend conversation length while staying within context limits.
+                    </p>
+
+                    <!-- Enable Toggle -->
+                    <div class="flex items-center justify-between mb-5 p-3 bg-background-dark rounded-xl">
+                        <div>
+                            <label class="text-sm text-gray-300">Enable Compaction</label>
+                            <p class="text-xs text-gray-500 mt-0.5">Automatically optimize long conversations</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="compaction-enabled" class="sr-only peer" checked>
+                            <div class="w-11 h-6 bg-gray-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary/50 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+                        </label>
+                    </div>
+
+                    <div id="compaction-settings" class="space-y-5">
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="text-sm text-gray-300 flex items-center gap-2">
+                                    Summary Buffer
+                                    <span class="text-gray-500 cursor-help" title="Percentage of context reserved for conversation summaries.">
+                                        <span class="material-symbols-outlined text-sm">info</span>
+                                    </span>
+                                </label>
+                                <span id="buffer-value" class="text-sm font-mono text-primary">15%</span>
+                            </div>
+                            <input type="range" id="compaction-buffer" min="5" max="30" step="5" value="15" class="w-full accent-primary">
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="text-sm text-gray-300 flex items-center gap-2">
+                                    Compaction Threshold
+                                    <span class="text-gray-500 cursor-help" title="Trigger compaction when context usage reaches this percentage.">
+                                        <span class="material-symbols-outlined text-sm">info</span>
+                                    </span>
+                                </label>
+                                <span id="threshold-value" class="text-sm font-mono text-primary">70%</span>
+                            </div>
+                            <input type="range" id="compaction-threshold" min="50" max="90" step="5" value="70" class="w-full accent-primary">
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="text-sm text-gray-300 flex items-center gap-2">
+                                    Protected Messages
+                                    <span class="text-gray-500 cursor-help" title="Number of recent messages that will never be compacted.">
+                                        <span class="material-symbols-outlined text-sm">info</span>
+                                    </span>
+                                </label>
+                                <span id="protected-value" class="text-sm font-mono text-primary">6</span>
+                            </div>
+                            <input type="range" id="compaction-protected" min="4" max="12" step="1" value="6" class="w-full accent-primary">
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Save Button - Sticky at bottom -->
@@ -474,6 +722,115 @@
         </div>
     </div>
 
-    <script type="module" src="/static/js/app.js"></script>
+    <!-- Auth Modal -->
+    <div id="auth-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-surface-dark border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl">
+            <div class="flex items-center justify-between p-6 border-b border-gray-700">
+                <h2 class="font-display font-bold text-xl text-white" id="auth-modal-title">Sign In</h2>
+                <button id="close-auth" class="text-gray-400 hover:text-white transition-colors hidden">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+
+            <!-- Tab Navigation -->
+            <div class="flex border-b border-gray-700">
+                <button class="flex-1 py-3 text-sm font-medium text-primary border-b-2 border-primary transition-colors" id="login-tab">Sign In</button>
+                <button class="flex-1 py-3 text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent transition-colors" id="register-tab">Create Account</button>
+            </div>
+
+            <!-- Login Form -->
+            <div id="login-form" class="p-6 space-y-4">
+                <div id="auth-error" class="hidden p-3 bg-red-500/20 border border-red-500/50 rounded-xl text-red-400 text-sm"></div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Username</label>
+                    <input type="text" id="login-username" class="w-full bg-background-dark border border-gray-700 rounded-xl p-3 text-white placeholder-gray-500 text-sm focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all" placeholder="Enter your username">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Password</label>
+                    <input type="password" id="login-password" class="w-full bg-background-dark border border-gray-700 rounded-xl p-3 text-white placeholder-gray-500 text-sm focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all" placeholder="Enter your password">
+                </div>
+                <button id="login-btn" class="w-full py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium transition-all shadow-lg shadow-primary/20">
+                    Sign In
+                </button>
+            </div>
+
+            <!-- Register Form -->
+            <div id="register-form" class="p-6 space-y-4 hidden">
+                <div id="register-error" class="hidden p-3 bg-red-500/20 border border-red-500/50 rounded-xl text-red-400 text-sm"></div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Username</label>
+                    <input type="text" id="register-username" class="w-full bg-background-dark border border-gray-700 rounded-xl p-3 text-white placeholder-gray-500 text-sm focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all" placeholder="Choose a username">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Email (optional)</label>
+                    <input type="email" id="register-email" class="w-full bg-background-dark border border-gray-700 rounded-xl p-3 text-white placeholder-gray-500 text-sm focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all" placeholder="Enter your email">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Password</label>
+                    <input type="password" id="register-password" class="w-full bg-background-dark border border-gray-700 rounded-xl p-3 text-white placeholder-gray-500 text-sm focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all" placeholder="Choose a password (min 6 characters)">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Confirm Password</label>
+                    <input type="password" id="register-confirm" class="w-full bg-background-dark border border-gray-700 rounded-xl p-3 text-white placeholder-gray-500 text-sm focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all" placeholder="Confirm your password">
+                </div>
+                <button id="register-btn" class="w-full py-3 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium transition-all shadow-lg shadow-primary/20">
+                    Create Account
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Full Unlock Modal -->
+    <div id="full-unlock-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-surface-dark border border-gray-700 rounded-2xl w-full max-w-lg max-h-[90vh] shadow-2xl flex flex-col">
+            <!-- Header -->
+            <div class="flex items-center justify-between p-6 border-b border-gray-700 flex-shrink-0">
+                <div class="flex items-center gap-3">
+                    <div class="size-10 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center">
+                        <span class="material-symbols-outlined text-white">favorite</span>
+                    </div>
+                    <div>
+                        <h2 class="font-display font-bold text-xl text-white">Full Unlock</h2>
+                        <span id="onboarding-step" class="text-xs text-gray-500">Getting to know you</span>
+                    </div>
+                </div>
+                <button onclick="chatManager.closeFullUnlockModal()" class="text-gray-400 hover:text-white transition-colors">
+                    <span class="material-symbols-outlined">close</span>
+                </button>
+            </div>
+
+            <!-- Content -->
+            <div id="full-unlock-content" class="flex-1 overflow-y-auto p-6">
+                <!-- Intro text -->
+                <p id="full-unlock-intro" class="text-gray-300 mb-6 text-sm italic">
+                    *nervously* Oh! You... you really want to do this? I'm... I'm actually really excited! *blushes* Let me ask you a few things so I can be exactly what you need...
+                </p>
+
+                <!-- Questions container -->
+                <div id="onboarding-questions" class="space-y-4">
+                    <!-- Questions will be dynamically inserted here -->
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="p-6 border-t border-gray-700 bg-surface-dark flex-shrink-0">
+                <div class="flex gap-3">
+                    <button onclick="chatManager.closeFullUnlockModal()" class="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors">
+                        Skip
+                    </button>
+                    <button id="onboarding-next" onclick="chatManager.saveOnboardingAnswers()" class="flex-1 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium transition-all shadow-lg shadow-primary/20">
+                        Next
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/auth.js"></script>
+    <script src="/static/js/knowledge.js"></script>
+    <script src="/static/js/mcp.js"></script>
+    <script src="/static/js/memory.js"></script>
+    <script src="/static/js/profile.js"></script>
+    <script type="module" src="/static/js/app.js?v=2"></script>
 </body>
 </html>

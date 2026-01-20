@@ -95,7 +95,107 @@ export class ChatManager {
         }
     }
 
-    createMessageElement(role, content, images = [], messageId = null, files = []) {
+    /**
+     * Create an expandable context section showing thinking, memories, and tools
+     */
+    createContextSection(metadata) {
+        console.log('[Context] Creating context section with:', {
+            hasThinking: !!metadata.thinking_content,
+            thinkingLength: metadata.thinking_content?.length || 0,
+            thinkingPreview: metadata.thinking_content?.substring(0, 100) || '(none)',
+            memoriesCount: metadata.memories_used?.length || 0,
+            toolsCount: metadata.tools_available?.length || 0,
+            tools: metadata.tools_available
+        });
+
+        const section = document.createElement('details');
+        section.className = 'context-section mt-3 border-t border-gray-700/50 pt-3';
+
+        const summary = document.createElement('summary');
+        summary.className = 'text-xs text-gray-500 cursor-pointer hover:text-gray-400 transition-colors flex items-center gap-1';
+
+        // Count items to show in summary
+        const items = [];
+        if (metadata.thinking_content) items.push('reasoning');
+        if (metadata.memories_used?.length) items.push(`${metadata.memories_used.length} memories`);
+        if (metadata.tools_available?.length) items.push(`${metadata.tools_available.length} tools`);
+
+        summary.innerHTML = `
+            <span class="material-symbols-outlined text-sm">psychology</span>
+            Context (${items.join(', ')})
+        `;
+        section.appendChild(summary);
+
+        const content = document.createElement('div');
+        content.className = 'mt-2 space-y-3 text-xs';
+
+        // Thinking content (model's internal reasoning)
+        if (metadata.thinking_content) {
+            const thinkingDiv = document.createElement('div');
+            thinkingDiv.className = 'p-3 rounded-lg bg-primary/10 border border-primary/20';
+            thinkingDiv.innerHTML = `
+                <div class="flex items-center gap-1 text-primary font-medium mb-1">
+                    <span class="material-symbols-outlined text-sm">psychology</span>
+                    Model Reasoning
+                    <span class="text-[10px] text-gray-500 ml-1">(internal thought process)</span>
+                </div>
+                <div class="text-gray-400 max-h-48 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed">${this.escapeHtml(metadata.thinking_content)}</div>
+            `;
+            content.appendChild(thinkingDiv);
+        }
+
+        // Memories used
+        if (metadata.memories_used?.length) {
+            const memoriesDiv = document.createElement('div');
+            memoriesDiv.className = 'p-3 rounded-lg bg-purple-500/10 border border-purple-500/20';
+            memoriesDiv.innerHTML = `
+                <div class="flex items-center gap-1 text-purple-400 font-medium mb-1">
+                    <span class="material-symbols-outlined text-sm">memory</span>
+                    Memories Used (${metadata.memories_used.length})
+                </div>
+                <div class="space-y-1 max-h-32 overflow-y-auto">
+                    ${metadata.memories_used.map(m => `
+                        <div class="text-gray-400">
+                            <span class="text-purple-300">[${m.category || 'general'}]</span> ${this.escapeHtml(m.content || '')}
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+            content.appendChild(memoriesDiv);
+        }
+
+        // Tools available
+        if (metadata.tools_available?.length) {
+            const toolsDiv = document.createElement('div');
+            toolsDiv.className = 'p-3 rounded-lg bg-green-500/10 border border-green-500/20';
+            toolsDiv.innerHTML = `
+                <div class="flex items-center gap-1 text-green-400 font-medium mb-1">
+                    <span class="material-symbols-outlined text-sm">build</span>
+                    Tools Available
+                </div>
+                <div class="flex flex-wrap gap-1">
+                    ${metadata.tools_available.map(t => `
+                        <span class="px-1.5 py-0.5 bg-green-500/20 text-green-300 rounded text-[10px]">${t}</span>
+                    `).join('')}
+                </div>
+            `;
+            content.appendChild(toolsDiv);
+        }
+
+        section.appendChild(content);
+        return section;
+    }
+
+    /**
+     * Escape HTML to prevent XSS in user/model content
+     */
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    createMessageElement(role, content, images = [], messageId = null, files = [], metadata = {}) {
         const isUser = role === 'user';
         const message = document.createElement('div');
         message.className = `flex gap-4 md:gap-6 animate-fadeIn group ${isUser ? 'flex-row-reverse' : ''}`;
@@ -117,10 +217,11 @@ export class ChatManager {
 
         // Assistant header
         if (!isUser) {
+            const assistantName = this.app.getAssistantName();
             const header = document.createElement('div');
-            header.className = 'flex items-center gap-2 mb-1';
+            header.className = 'flex items-center gap-2 mb-1 assistant-header';
             header.innerHTML = `
-                <span class="font-bold text-gray-200 text-sm">PeanutChat</span>
+                <span class="font-bold text-gray-200 text-sm assistant-name">${assistantName}</span>
                 <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-800 text-gray-400 border border-gray-700">AI</span>
             `;
             bubbleContainer.appendChild(header);
@@ -174,6 +275,13 @@ export class ChatManager {
             contentEl.innerHTML = this.renderMarkdown(content);
         }
         bubble.appendChild(contentEl);
+
+        // Context section for assistant messages (thinking, memories, tools)
+        if (!isUser && (metadata.thinking_content || metadata.memories_used || metadata.tools_available)) {
+            const contextSection = this.createContextSection(metadata);
+            bubble.appendChild(contextSection);
+        }
+
         bubbleContainer.appendChild(bubble);
 
         // Timestamp
@@ -223,7 +331,10 @@ export class ChatManager {
             copyBtn.onclick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                chatManager.copyToClipboard(messageContent, copyBtn);
+                // For assistant messages, copy the rendered text content, not raw markdown
+                const textToCopy = contentEl.textContent || messageContent;
+                console.log('[Copy] Copying assistant message rendered text, length:', textToCopy.length);
+                chatManager.copyToClipboard(textToCopy, copyBtn);
             };
             actions.appendChild(copyBtn);
 
@@ -266,7 +377,21 @@ export class ChatManager {
         }
 
         conv.messages.forEach(msg => {
-            const msgEl = this.createMessageElement(msg.role, msg.content, msg.images || [], msg.id, msg.files);
+            // Build metadata object for context section
+            const metadata = {
+                thinking_content: msg.thinking_content,
+                memories_used: msg.memories_used,
+                tools_available: msg.tools_available
+            };
+            if (msg.role === 'assistant' && (metadata.thinking_content || metadata.memories_used || metadata.tools_available)) {
+                console.log('[Render] Message has context metadata:', {
+                    id: msg.id,
+                    hasThinking: !!metadata.thinking_content,
+                    memoriesCount: metadata.memories_used?.length || 0,
+                    toolsCount: metadata.tools_available?.length || 0
+                });
+            }
+            const msgEl = this.createMessageElement(msg.role, msg.content, msg.images || [], msg.id, msg.files, metadata);
             this.messageList.appendChild(msgEl);
         });
 
@@ -274,13 +399,14 @@ export class ChatManager {
     }
 
     showWelcome() {
+        const assistantName = this.app.getAssistantName();
         const welcome = document.createElement('div');
         welcome.className = 'welcome-message text-center py-16 space-y-4 animate-fadeIn';
         welcome.innerHTML = `
             <div class="size-16 rounded-2xl bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center mx-auto shadow-lg shadow-primary/30">
                 <span class="material-symbols-outlined text-3xl text-white">smart_toy</span>
             </div>
-            <h2 class="font-display font-bold text-2xl text-white">Welcome to PeanutChat</h2>
+            <h2 class="font-display font-bold text-2xl text-white">Welcome to ${assistantName}</h2>
             <p class="text-gray-400 max-w-md mx-auto">Chat with a local AI that can search the web and help with any task.</p>
             <p class="text-gray-500 text-sm">Choose a model from the dropdown to get started.</p>
         `;
@@ -294,11 +420,11 @@ export class ChatManager {
         this.showWelcome();
     }
 
-    addMessage(role, content, images = [], messageId = null, files = []) {
+    addMessage(role, content, images = [], messageId = null, files = [], metadata = {}) {
         const welcome = this.messageList.querySelector('.welcome-message');
         if (welcome) welcome.remove();
 
-        const message = this.createMessageElement(role, content, images, messageId, files);
+        const message = this.createMessageElement(role, content, images, messageId, files, metadata);
         this.messageList.appendChild(message);
         this.scrollToBottom();
         return message;
@@ -326,10 +452,11 @@ export class ChatManager {
         bubbleContainer.className = 'flex-1 min-w-0 space-y-2';
 
         // Header
+        const assistantName = this.app.getAssistantName();
         const header = document.createElement('div');
-        header.className = 'flex items-center gap-2 mb-1';
+        header.className = 'flex items-center gap-2 mb-1 assistant-header';
         header.innerHTML = `
-            <span class="font-bold text-gray-200 text-sm">PeanutChat</span>
+            <span class="font-bold text-gray-200 text-sm assistant-name">${assistantName}</span>
             <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-800 text-gray-400 border border-gray-700">AI</span>
         `;
         bubbleContainer.appendChild(header);
@@ -533,7 +660,7 @@ export class ChatManager {
         actions.className = 'flex gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity';
 
         // Store for closure
-        const streamContent = this.currentStreamContent;
+        const contentEl = this.currentAssistantMessage.contentEl;
         const msgId = messageId;
         const chatManager = this;
 
@@ -544,7 +671,10 @@ export class ChatManager {
         copyBtn.onclick = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            chatManager.copyToClipboard(streamContent, copyBtn);
+            // Copy the rendered text content, not raw markdown
+            const textToCopy = contentEl.textContent || '';
+            console.log('[Copy] Copying streamed message rendered text, length:', textToCopy.length);
+            chatManager.copyToClipboard(textToCopy, copyBtn);
         };
 
         const regenBtn = document.createElement('button');
@@ -903,8 +1033,8 @@ export class ChatManager {
             } else {
                 // Invalid action, show help
                 this.addSystemMessage(
-                    'Usage: /full_unlock enable - Enable adult mode for this session\n' +
-                    '       /full_unlock disable - Disable adult mode for this session',
+                    'Usage: /full_unlock enable - Enable uncensored mode for this session\n' +
+                    '       /full_unlock disable - Disable uncensored mode for this session',
                     'info'
                 );
                 return true;
@@ -985,7 +1115,7 @@ export class ChatManager {
                     const errorData = await response.json().catch(() => ({}));
                     throw new Error(errorData.detail || 'Session error. Please refresh the page.');
                 }
-                throw new Error('Failed to ' + action + ' adult mode');
+                throw new Error('Failed to ' + action + ' uncensored mode');
             }
 
             const data = await response.json();
@@ -994,12 +1124,12 @@ export class ChatManager {
             loadingMsg.remove();
 
             if (action === 'disable') {
-                this.addSystemMessage('Adult mode has been disabled for this session.', 'info');
+                this.addSystemMessage('Uncensored mode has been disabled for this session.', 'info');
                 return;
             }
 
             // Show success message
-            this.addSystemMessage('Adult mode enabled! All sensitive content sections are now available.', 'success');
+            this.addSystemMessage('Uncensored mode enabled! All sensitive content sections are now available.', 'success');
 
             // Show the full unlock onboarding modal
             this.showFullUnlockOnboarding(data);

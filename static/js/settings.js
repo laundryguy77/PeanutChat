@@ -41,6 +41,21 @@ export class SettingsManager {
         this.setupRangeInput('top-k', 'topk-value');
         this.setupRangeInput('num-ctx', 'ctx-value');
         this.setupRangeInput('repeat-penalty', 'repeat-value');
+
+        // Compaction settings
+        this.setupRangeInput('compaction-buffer', 'buffer-value', '%');
+        this.setupRangeInput('compaction-threshold', 'threshold-value', '%');
+        this.setupRangeInput('compaction-protected', 'protected-value');
+
+        // Compaction enable toggle
+        const compactionEnabled = document.getElementById('compaction-enabled');
+        const compactionSettings = document.getElementById('compaction-settings');
+        if (compactionEnabled && compactionSettings) {
+            compactionEnabled.addEventListener('change', () => {
+                compactionSettings.style.opacity = compactionEnabled.checked ? '1' : '0.5';
+                compactionSettings.style.pointerEvents = compactionEnabled.checked ? 'auto' : 'none';
+            });
+        }
     }
 
     setTheme(theme) {
@@ -99,14 +114,14 @@ export class SettingsManager {
         });
     }
 
-    setupRangeInput(inputId, displayId) {
+    setupRangeInput(inputId, displayId, suffix = '') {
         const input = document.getElementById(inputId);
         const display = document.getElementById(displayId);
 
         if (!input || !display) return;  // Skip if elements don't exist
 
         input.addEventListener('input', () => {
-            display.textContent = input.value;
+            display.textContent = input.value + suffix;
         });
     }
 
@@ -133,28 +148,53 @@ export class SettingsManager {
         this.setRangeValue('top-k', 'topk-value', this.settings.top_k || 40);
         this.setRangeValue('num-ctx', 'ctx-value', this.settings.num_ctx || 4096);
         this.setRangeValue('repeat-penalty', 'repeat-value', this.settings.repeat_penalty || 1.1);
+
+        // Compaction settings
+        const compactionEnabled = document.getElementById('compaction-enabled');
+        const compactionSettings = document.getElementById('compaction-settings');
+        if (compactionEnabled) {
+            compactionEnabled.checked = this.settings.compaction_enabled !== false;
+            if (compactionSettings) {
+                compactionSettings.style.opacity = compactionEnabled.checked ? '1' : '0.5';
+                compactionSettings.style.pointerEvents = compactionEnabled.checked ? 'auto' : 'none';
+            }
+        }
+        this.setRangeValue('compaction-buffer', 'buffer-value', this.settings.compaction_buffer_percent || 15, '%');
+        this.setRangeValue('compaction-threshold', 'threshold-value', this.settings.compaction_threshold_percent || 70, '%');
+        this.setRangeValue('compaction-protected', 'protected-value', this.settings.compaction_protected_messages || 6);
     }
 
-    setRangeValue(inputId, displayId, value) {
+    setRangeValue(inputId, displayId, value, suffix = '') {
         const input = document.getElementById(inputId);
         const display = document.getElementById(displayId);
         if (!input || !display) return;
         input.value = value;
-        display.textContent = value;
+        display.textContent = value + suffix;
     }
 
     async saveSettings() {
         const personaEl = document.getElementById('persona-input');
+        const compactionEnabledEl = document.getElementById('compaction-enabled');
         const newSettings = {
             persona: personaEl ? personaEl.value || null : null,
             temperature: parseFloat(document.getElementById('temperature').value),
             top_p: parseFloat(document.getElementById('top-p').value),
             top_k: parseInt(document.getElementById('top-k').value),
             num_ctx: parseInt(document.getElementById('num-ctx').value),
-            repeat_penalty: parseFloat(document.getElementById('repeat-penalty').value)
+            repeat_penalty: parseFloat(document.getElementById('repeat-penalty').value),
+            // Compaction settings
+            compaction_enabled: compactionEnabledEl ? compactionEnabledEl.checked : true,
+            compaction_buffer_percent: parseInt(document.getElementById('compaction-buffer')?.value || 15),
+            compaction_threshold_percent: parseInt(document.getElementById('compaction-threshold')?.value || 70),
+            compaction_protected_messages: parseInt(document.getElementById('compaction-protected')?.value || 6)
         };
 
         try {
+            // Save profile first if available
+            if (typeof profileManager !== 'undefined') {
+                await profileManager.saveProfile();
+            }
+
             const response = await fetch('/api/settings', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -178,6 +218,20 @@ export class SettingsManager {
         this.loadSettings().then(() => {
             this.updateThemeButtons();
             this.modal.classList.remove('hidden');
+
+            // Initialize knowledge base manager
+            knowledgeManager.init();
+
+            // Initialize MCP manager
+            mcpManager.init();
+
+            // Initialize memory manager
+            memoryManager.init();
+
+            // Initialize profile manager
+            if (typeof profileManager !== 'undefined') {
+                profileManager.init();
+            }
         });
     }
 

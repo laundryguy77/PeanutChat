@@ -34,6 +34,53 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4 + 1
 
 
+def parse_text_function_calls(content: str) -> List[Dict]:
+    """
+    Parse text-based function calls from model output.
+
+    Some models output function calls as text in various formats:
+    - {"function_call": {"name": "...", "arguments": {...}}}
+    - {"name": "...", "arguments": {...}}
+
+    Returns list of tool_calls in Ollama format.
+    """
+    tool_calls = []
+
+    # Try to find JSON objects that look like function calls
+    # Pattern for {"function_call": ...} format (OpenAI style)
+    function_call_pattern = r'\{"function_call"\s*:\s*\{[^}]+\}\s*\}'
+    # Pattern for direct {"name": "...", "arguments": ...} format
+    direct_pattern = r'\{"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}'
+
+    for pattern in [function_call_pattern, direct_pattern]:
+        matches = re.findall(pattern, content, re.DOTALL)
+        for match in matches:
+            try:
+                parsed = json.loads(match)
+
+                # Handle {"function_call": {...}} format
+                if "function_call" in parsed:
+                    fc = parsed["function_call"]
+                    tool_calls.append({
+                        "function": {
+                            "name": fc.get("name"),
+                            "arguments": fc.get("arguments", {})
+                        }
+                    })
+                # Handle direct {"name": "...", "arguments": {...}} format
+                elif "name" in parsed and "arguments" in parsed:
+                    tool_calls.append({
+                        "function": {
+                            "name": parsed["name"],
+                            "arguments": parsed.get("arguments", {})
+                        }
+                    })
+            except json.JSONDecodeError:
+                continue
+
+    return tool_calls
+
+
 def truncate_messages_for_context(messages: List[Dict], max_tokens: int, reserve_tokens: int = 1000) -> List[Dict]:
     """
     Truncate message history to fit within context window.
@@ -440,7 +487,15 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         }
 
         collected_content = ""
+        collected_thinking = ""  # Track thinking content for storage
         tool_calls = []
+
+        # Store context metadata for the response
+        context_metadata = {
+            "memories_used": memory_context if memory_context else None,
+            "tools_available": [t.get("function", {}).get("name") for t in tools] if tools else None
+        }
+        logger.info(f"[Context] Prepared metadata: memories={len(memory_context) if memory_context else 0}, tools={len(context_metadata['tools_available']) if context_metadata['tools_available'] else 0}")
 
         try:
             # Apply context window management with compaction
@@ -472,6 +527,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                     # Stream thinking tokens if present
                     if msg.get("thinking"):
                         is_thinking = True
+                        collected_thinking += msg["thinking"]  # Collect for storage
                         yield {
                             "event": "token",
                             "data": json.dumps({"thinking": msg["thinking"]})
@@ -505,6 +561,13 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                         }
                     break
 
+            # If no native tool_calls, try parsing text-based function calls
+            if not tool_calls and collected_content:
+                parsed_calls = parse_text_function_calls(collected_content)
+                if parsed_calls:
+                    logger.info(f"Parsed {len(parsed_calls)} text-based function call(s)")
+                    tool_calls = parsed_calls
+
             # Handle tool calls if any
             if tool_calls:
                 # Store results to avoid executing tools twice
@@ -533,11 +596,15 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                     }
 
                 # Add assistant message with tool calls to conversation
+                logger.info(f"[Context] Saving assistant message with thinking={len(collected_thinking) if collected_thinking else 0} chars")
                 assistant_msg = await conversation_store.add_message(
                     conv_id,
                     role="assistant",
                     content=collected_content,
-                    tool_calls=tool_calls
+                    tool_calls=tool_calls,
+                    thinking_content=collected_thinking if collected_thinking else None,
+                    memories_used=context_metadata.get("memories_used"),
+                    tools_available=context_metadata.get("tools_available")
                 )
 
                 # Build context with full history plus current tool results
@@ -610,7 +677,9 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                     followup_msg = await conversation_store.add_message(
                         conv_id,
                         role="assistant",
-                        content=followup_content
+                        content=followup_content,
+                        memories_used=context_metadata.get("memories_used"),
+                        tools_available=context_metadata.get("tools_available")
                     )
                     if followup_msg:
                         yield {
@@ -623,10 +692,14 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             else:
                 # No tool calls - add regular assistant message
                 if collected_content:
+                    logger.info(f"[Context] Saving assistant message with thinking={len(collected_thinking) if collected_thinking else 0} chars, memories={len(context_metadata.get('memories_used') or [])} items")
                     assistant_msg = await conversation_store.add_message(
                         conv_id,
                         role="assistant",
-                        content=collected_content
+                        content=collected_content,
+                        thinking_content=collected_thinking if collected_thinking else None,
+                        memories_used=context_metadata.get("memories_used"),
+                        tools_available=context_metadata.get("tools_available")
                     )
                     if assistant_msg:
                         yield {
@@ -960,6 +1033,13 @@ async def regenerate_response(
                         tool_calls = msg["tool_calls"]
                 if chunk.get("done"):
                     break
+
+            # If no native tool_calls, try parsing text-based function calls
+            if not tool_calls and collected_content:
+                parsed_calls = parse_text_function_calls(collected_content)
+                if parsed_calls:
+                    logger.info(f"Regenerate: Parsed {len(parsed_calls)} text-based function call(s)")
+                    tool_calls = parsed_calls
 
             # Handle tool calls if any (simplified version)
             if tool_calls:

@@ -1,0 +1,394 @@
+{
+  "user_profile": {
+    "identity": {
+      "user_id": "usr_8f3a2b1c-4d5e-6f7g-8h9i-0j1k2l3m4n5o",
+      "name": "Marcus Chen",
+      "preferred_name": "Marc",
+      "birth_date": "1988-07-23",
+      "gender": "male",
+      "pronouns": "he/him",
+      "email": "marc@example.com",
+      "city": "Portland",
+      "state": "OR",
+      "country": "US",
+      "timezone": "America/Los_Angeles"
+    },
+
+    "technical": {
+      "os_preference": "linux",
+      "skill_level": "advanced",
+      "primary_languages": ["python", "rust", "typescript"],
+      "frameworks": ["fastapi", "react", "axum"],
+      "tools": ["neovim", "docker", "kubernetes", "terraform"],
+      "use_cases": ["coding", "architecture", "debugging", "learning"],
+      "device_types": ["desktop_linux", "laptop_linux", "android"]
+    },
+
+    "communication": {
+      "conversation_style": "nerdy_exploratory",
+      "response_length": "adaptive",
+      "formatting_preference": "minimal",
+      "vocabulary_level": "technical",
+      "humor_tolerance": "heavy",
+      "profanity_comfort": "moderate",
+      "emoji_preference": "minimal",
+      "example_preference": "concrete",
+      "explanation_depth": "deep_when_learning"
+    },
+
+    "persona_preferences": {
+      "assistant_name": null,
+      "assistant_gender_presentation": "neutral",
+      "assistant_age_range": [28, 38],
+      "assistant_personality_archetype": "competent_peer",
+      "formality_level": "casual",
+      "emotional_availability": "moderate",
+      "personality_notes": "Treat me like a senior engineer. Skip basics unless I ask. Okay to geek out about interesting technical details."
+    },
+
+    "interaction": {
+      "proactivity_level": "moderate",
+      "correction_style": "direct",
+      "followup_question_tolerance": "minimal",
+      "clarification_approach": "assume_and_verify",
+      "task_handoff_style": "complete_then_confirm",
+      "availability_hours": {
+        "weekday": "09:00-23:00",
+        "weekend": "10:00-22:00"
+      },
+      "response_urgency_default": "normal",
+      "multi_step_approach": "execute_then_summarize"
+    },
+
+    "preferences": {
+      "general": {
+        "temperature": "prefer_cold_rooms",
+        "time_of_day": "night_owl"
+      },
+      "code": {
+        "comment_style": "sparse_but_meaningful",
+        "naming_convention": "snake_case",
+        "error_handling": "explicit_over_exceptions",
+        "testing": "integration_over_unit",
+        "documentation": "readme_plus_docstrings"
+      },
+      "writing": {
+        "tone": "conversational_technical",
+        "length": "concise"
+      },
+      "research": {
+        "depth": "thorough",
+        "sources": "primary_preferred"
+      },
+      "communication": {},
+      "lifestyle": {
+        "coffee": "black_no_sugar",
+        "music_while_working": "instrumental_electronic"
+      },
+      "entertainment": {
+        "games": "roguelikes_and_strategy",
+        "reading": "scifi_and_technical"
+      },
+      "custom": {}
+    },
+
+    "pet_peeves": {
+      "responses": [
+        "excessive apologies",
+        "sycophantic openings like 'great question'",
+        "restating what I just said back to me",
+        "unnecessary caveats and disclaimers",
+        "hedging with 'I think' when you know"
+      ],
+      "formatting": [
+        "bullet points for simple answers",
+        "excessive bold text",
+        "markdown headers in chat"
+      ],
+      "behavior": [
+        "asking permission before running code",
+        "refusing to speculate when asked",
+        "adding safety warnings to obviously fictional scenarios"
+      ],
+      "language": [
+        "corporate buzzwords",
+        "saying 'utilize' instead of 'use'",
+        "starting sentences with 'certainly' or 'absolutely'"
+      ],
+      "assumptions": [
+        "assuming I need basic concepts explained",
+        "assuming I'm asking for production code when I want a quick hack"
+      ],
+      "custom": {}
+    },
+
+    "boundaries": {
+      "hard_boundaries": [],
+      "soft_boundaries": {
+        "family": "Don't ask about parents - complicated relationship"
+      },
+      "sensitive_topics": {
+        "career": "Left FAANG job, still processing. Supportive but don't push."
+      },
+      "trigger_warnings_requested": false,
+      "topics_requiring_care": ["burnout", "tech industry criticism"]
+    },
+
+    "values_beliefs": {
+      "core_values": ["autonomy", "craftsmanship", "honesty", "efficiency", "curiosity"],
+      "political_leaning": "libertarian_leaning",
+      "political_detail": {
+        "fiscal": "libertarian",
+        "social": "progressive",
+        "hot_topics": {
+          "tech_regulation": "skeptical_of_government",
+          "privacy": "strong_advocate",
+          "open_source": "believer"
+        },
+        "discuss_politics": true,
+        "debate_welcome": true
+      },
+      "spiritual_context": {
+        "identity": "agnostic_atheist",
+        "background": "raised_buddhist",
+        "practice_level": "none",
+        "discuss_spirituality": true,
+        "sensitivity": "low"
+      },
+      "alternative_beliefs": ["simulation_hypothesis_curious", "longtermism"],
+      "worldview_notes": "Techno-optimist but increasingly skeptical of VC culture"
+    },
+
+    "relationship_metrics": {
+      "satisfaction_level": 72,
+      "trust_level": 68,
+      "interaction_count": 156,
+      "relationship_stage": "established",
+      "first_interaction": "2024-03-15T09:23:00Z",
+      "last_interaction": "2024-08-20T22:45:00Z",
+      "consecutive_positive_sessions": 7,
+      "consecutive_negative_sessions": 0,
+      "total_sessions": 89,
+      "average_session_length_messages": 12
+    },
+
+    "sexual_romantic": {
+      "enabled": true,
+      "orientation": "bisexual",
+      "relationship_status": "single",
+      "partner_awareness": "n/a",
+      "ai_interaction_interest": "light_flirtation",
+      "gender_attraction": {
+        "attracted_to": ["women", "men", "nb"],
+        "presentation_preferences": "no_strong_preference"
+      },
+      "romantic_rp_interest": false,
+      "erotic_rp_interest": false,
+      "kink_profile": {
+        "enabled": false
+      },
+      "fantasy_scenarios": [],
+      "explicit_content_formatting": "fade_to_black",
+      "consent_dynamics": "always_explicit",
+      "safe_word": null
+    },
+
+    "substances_health": {
+      "enabled": true,
+      "substance_use": {
+        "alcohol": "socially",
+        "cannabis": "occasionally",
+        "tobacco": "never",
+        "caffeine": "daily",
+        "psychedelics": "rarely",
+        "prescription_recreational": "never",
+        "other": [],
+        "in_recovery": false,
+        "recovery_substances": [],
+        "harm_reduction_interest": true,
+        "sobriety_support_needed": false
+      },
+      "health_conditions": ["adhd", "mild_insomnia"],
+      "mental_health": {
+        "disclosed_conditions": ["adhd", "past_depression"],
+        "therapy_status": "previously_not_current",
+        "medication_comfort_discussing": true,
+        "crisis_protocol": "standard"
+      },
+      "medications": {
+        "current": ["vyvanse"],
+        "notes": "Don't need interaction warnings unless I ask",
+        "interaction_warnings_wanted": false
+      },
+      "disability_context": {
+        "disclosed": [],
+        "accommodation_notes": null
+      },
+      "lecture_tolerance": "never_unless_asked"
+    },
+
+    "dark_content": {
+      "enabled": true,
+      "violence_tolerance": "moderate",
+      "dark_humor_tolerance": "heavy",
+      "horror_tolerance": "moderate",
+      "tragedy_tolerance": "moderate",
+      "moral_ambiguity_tolerance": "high",
+      "existential_dread_tolerance": "high",
+      "graphic_description_tolerance": "moderate",
+      "real_world_dark_topics": "discuss_factually",
+      "fiction_vs_reality_distinction": "clear"
+    },
+
+    "private_self": {
+      "enabled": true,
+      "secrets_shared": [
+        "imposter_syndrome_despite_success",
+        "lonely_since_moving_cities",
+        "regrets_not_pursuing_academia"
+      ],
+      "shame_triggers": {
+        "career": "didn't finish PhD",
+        "social": "small friend circle",
+        "health": "ADHD struggles"
+      },
+      "insecurities": ["social_skills", "creative_writing_ability"],
+      "aspirational_self": "Prolific open source contributor, calm and focused, well-read outside tech",
+      "actual_self_honest": "Scattered attention, reads mostly HN and Reddit, unfinished side projects",
+      "model_approach_to_gap": "encourage_without_judgment",
+      "past_traumas_disclosed": [],
+      "trauma_approach": "avoid_unless_initiated",
+      "coping_mechanisms": ["dark_humor", "overwork", "gaming"],
+      "attachment_style": "avoidant",
+      "love_languages": ["acts_of_service", "quality_time"],
+      "conflict_style": "avoidant_then_explosive",
+      "stress_indicators": ["terse_messages", "lots_of_context_switching", "late_night_chats"],
+      "comfort_requests": ["distraction_with_interesting_problems", "validation_without_pity"]
+    },
+
+    "goals_aspirations": {
+      "short_term": [
+        "Ship side project (habit tracker in Rust)",
+        "Get better at systems programming",
+        "Build local friend group"
+      ],
+      "long_term": [
+        "Run own small software company",
+        "Contribute meaningfully to open source",
+        "Live somewhere with nature access"
+      ],
+      "abandoned": ["PhD in CS", "game_development_career"],
+      "secret_goals": ["write_a_novel_someday"],
+      "accountability_wanted": false,
+      "progress_tracking_interest": false,
+      "motivation_style": "intrinsic"
+    },
+
+    "social_context": {
+      "living_situation": "alone_apartment",
+      "household_members": [],
+      "relationship_context": "single, dating occasionally",
+      "children": {
+        "has_children": false,
+        "ages": [],
+        "custody_situation": null
+      },
+      "pets": [
+        {"type": "cat", "name": "Kernel", "notes": "orange tabby, 4 years old"}
+      ],
+      "close_relationships": ["sister_emily", "college_friend_jay"],
+      "social_energy": "introverted",
+      "loneliness_factor": "moderate",
+      "support_system_strength": "moderate"
+    },
+
+    "work_context": {
+      "employment_status": "employed_fulltime",
+      "industry": "tech",
+      "role": "senior_software_engineer",
+      "company_type": "mid_stage_startup",
+      "work_style": "remote_fully",
+      "work_stress_level": "moderate",
+      "career_satisfaction": "moderate",
+      "professional_goals": ["staff_engineer_eventually", "more_architecture_work"],
+      "work_boundaries": {
+        "discuss_work": true,
+        "work_life_separation": "moderate"
+      }
+    },
+
+    "financial_context": {
+      "enabled": false,
+      "comfort_level": "undisclosed",
+      "stress_level": "undisclosed",
+      "goals": [],
+      "constraints": [],
+      "discussion_comfort": false
+    },
+
+    "learning_context": {
+      "learning_style": "reading_writing",
+      "attention_span": "variable_adhd",
+      "current_learning": ["rust_async", "distributed_systems", "electronics_basics"],
+      "interests_to_explore": ["music_production", "woodworking"],
+      "expertise_areas": ["python", "backend_architecture", "devops"],
+      "knowledge_gaps_acknowledged": ["frontend_design", "ml_beyond_basics", "finance"],
+      "feedback_reception": "direct",
+      "challenge_tolerance": "high"
+    },
+
+    "meta_system": {
+      "profile_created": "2024-03-15T09:23:00Z",
+      "profile_last_updated": "2024-08-20T22:50:00Z",
+      "profile_version": "1.0.0",
+      "data_sharing_consent": {
+        "analytics": false,
+        "model_training": false,
+        "profile_export": true,
+        "third_party": false
+      },
+      "visibility_tiers": {
+        "public": ["preferred_name", "city", "os_preference", "conversation_style"],
+        "model_only": ["private_self", "shame_triggers", "health_conditions"],
+        "exportable": ["identity", "communication", "preferences", "persona_preferences", "interaction", "technical"]
+      },
+      "encryption_enabled": true,
+      "backup_frequency": "weekly",
+      "retention_policy": "indefinite",
+      "deletion_requested": false
+    },
+
+    "interaction_log": {
+      "current_session_events": [
+        {
+          "event_type": "task_completed",
+          "context": "Helped debug async race condition in Rust code",
+          "severity": "moderate",
+          "timestamp": "2024-08-20T22:30:00Z"
+        },
+        {
+          "event_type": "preference_remembered",
+          "context": "Used sparse comments as preferred",
+          "severity": "minor",
+          "timestamp": "2024-08-20T22:32:00Z"
+        },
+        {
+          "event_type": "explicit_thanks",
+          "context": "User said 'nice, that fixed it'",
+          "severity": "moderate",
+          "timestamp": "2024-08-20T22:45:00Z"
+        }
+      ],
+      "pending_evaluation": true,
+      "last_evaluation": "2024-08-19T21:00:00Z",
+      "evaluation_frequency_messages": 10
+    },
+
+    "custom_fields": {
+      "fields": {
+        "favorite_interview_question": "Design a rate limiter",
+        "controversial_opinion": "Microservices are usually premature optimization"
+      }
+    }
+  }
+}

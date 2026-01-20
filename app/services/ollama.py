@@ -1,14 +1,17 @@
 import httpx
 import json
+import logging
+import re
 from typing import AsyncGenerator, List, Optional, Dict, Any
 from app.config import OLLAMA_BASE_URL, get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaService:
     def __init__(self):
         self.base_url = OLLAMA_BASE_URL
         self.client = httpx.AsyncClient(timeout=300.0)
-        self._vision_models_cache = None
 
     async def list_models(self) -> List[Dict[str, Any]]:
         """Fetch available models from Ollama"""
@@ -16,6 +19,64 @@ class OllamaService:
         response.raise_for_status()
         data = response.json()
         return data.get("models", [])
+
+    async def get_chat_models_with_capabilities(self) -> List[Dict[str, Any]]:
+        """Get only chat-capable models with their capabilities.
+
+        Filters out embedding models and returns capability metadata for each model.
+        """
+        response = await self.client.get(f"{self.base_url}/api/tags")
+        response.raise_for_status()
+        all_models = response.json().get("models", [])
+
+        chat_models = []
+        for model in all_models:
+            model_name = model.get("name", "")
+
+            # Get detailed info including capabilities
+            try:
+                show_response = await self.client.post(
+                    f"{self.base_url}/api/show",
+                    json={"name": model_name}
+                )
+                info = show_response.json() if show_response.status_code == 200 else {}
+            except Exception as e:
+                logger.warning(f"Failed to get info for {model_name}: {e}")
+                info = {}
+
+            capabilities = info.get("capabilities", [])
+            family = model.get("details", {}).get("family", "").lower()
+
+            # Skip embedding-only models
+            if "bert" in family:
+                logger.debug(f"Skipping {model_name}: BERT family (embedding model)")
+                continue
+
+            # Skip if no completion capability and name suggests embedding
+            if "completion" not in capabilities:
+                if "embed" in model_name.lower():
+                    logger.debug(f"Skipping {model_name}: no completion + embed in name")
+                    continue
+                # Also skip if capabilities exist but don't include completion
+                if capabilities:
+                    logger.debug(f"Skipping {model_name}: has capabilities but no completion")
+                    continue
+
+            chat_models.append({
+                "name": model_name,
+                "size": model.get("size"),
+                "parameter_size": model.get("details", {}).get("parameter_size"),
+                "family": family,
+                "quantization_level": model.get("details", {}).get("quantization_level"),
+                "modified_at": model.get("modified_at"),
+                "capabilities": capabilities,
+                "supports_tools": "tools" in capabilities,
+                "supports_vision": "vision" in capabilities,
+                "supports_thinking": "thinking" in capabilities,
+            })
+
+        logger.info(f"Found {len(chat_models)} chat models out of {len(all_models)} total")
+        return chat_models
 
     async def get_model_capabilities(self, model_name: str) -> dict:
         """Get model capabilities from Ollama API"""
@@ -32,17 +93,17 @@ class OllamaService:
                     "template": data.get("template", "")
                 }
         except Exception as e:
-            print(f"Failed to get model capabilities: {e}")
+            logger.warning(f"Failed to get model capabilities: {e}")
         return {"capabilities": [], "details": {}, "template": ""}
 
     async def is_vision_model(self, model_name: str) -> bool:
         """Check if a model supports vision/images"""
         info = await self.get_model_capabilities(model_name)
-        print(f"[OLLAMA] Checking vision for {model_name}, capabilities: {info['capabilities']}")
+        logger.debug(f"Checking vision for {model_name}, capabilities: {info['capabilities']}")
 
         # Check capabilities array from Ollama API
         if "vision" in info["capabilities"]:
-            print(f"[OLLAMA] {model_name} has vision capability from API")
+            logger.debug(f"{model_name} has vision capability from API")
             return True
 
         # Fallback: check model name for vision keywords
@@ -50,10 +111,10 @@ class OllamaService:
         model_lower = model_name.lower()
         for keyword in vision_keywords:
             if keyword in model_lower:
-                print(f"[OLLAMA] {model_name} matched vision keyword: {keyword}")
+                logger.debug(f"{model_name} matched vision keyword: {keyword}")
                 return True
 
-        print(f"[OLLAMA] {model_name} is NOT a vision model")
+        logger.debug(f"{model_name} is NOT a vision model")
         return False
 
     async def supports_tools(self, model_name: str) -> bool:
@@ -71,19 +132,91 @@ class OllamaService:
 
         return False
 
+    async def get_model_context_window(self, model_name: str) -> int:
+        """Get the context window size for a model from Ollama API."""
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/api/show",
+                json={"name": model_name},
+                timeout=10.0
+            )
+            if response.status_code == 200:
+                data = response.json()
+
+                # Check modelfile for num_ctx parameter
+                modelfile = data.get("modelfile", "")
+                match = re.search(r'PARAMETER\s+num_ctx\s+(\d+)', modelfile, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+
+                # Check model_info for context length keys
+                model_info = data.get("model_info", {})
+                for key, value in model_info.items():
+                    if "context" in key.lower() and isinstance(value, (int, float)):
+                        return int(value)
+
+                # Heuristic based on model size
+                name_lower = model_name.lower()
+                if any(x in name_lower for x in ["70b", "72b"]):
+                    return 8192
+                elif any(x in name_lower for x in ["32b", "34b"]):
+                    return 8192
+                elif any(x in name_lower for x in ["13b", "14b"]):
+                    return 4096
+                else:
+                    return 4096  # Default
+
+        except Exception as e:
+            logger.warning(f"Failed to get context window for {model_name}: {e}")
+
+        return 4096  # Fallback default
+
+    async def get_comprehensive_capabilities(self, model_name: str) -> dict:
+        """Get all model capabilities including context window."""
+        caps = await self.get_model_capabilities(model_name)
+        context_window = await self.get_model_context_window(model_name)
+
+        return {
+            "supports_vision": await self.is_vision_model(model_name),
+            "supports_tools": await self.supports_tools(model_name),
+            "supports_thinking": "thinking" in caps.get("capabilities", []),
+            "context_window": context_window,
+            "capabilities": caps.get("capabilities", [])
+        }
+
     def build_system_prompt(self, persona: Optional[str] = None, has_vision: bool = True, has_tools: bool = True) -> str:
         """Build system prompt with optional persona"""
         if has_tools:
-            base_prompt = """You are a helpful AI assistant with the ability to search the web, search conversation history, and generate images.
+            base_prompt = """You are a helpful AI assistant with access to tools.
 
-Available tools:
-- web_search: Use this when asked about current events, news, or information you need to look up online.
-- search_conversations: Use this when the user references something from a previous conversation, asks "remember when we discussed...", or when you need context from past chats.
-- generate_image: Use this when a user wants to create/generate an image from a description.
+INFORMATION PRIORITY (highest to lowest):
+1. Files attached to this conversation - these are the user's primary reference
+2. search_knowledge_base - user's uploaded documents (PDFs, code, text files)
+3. search_conversations - context from previous chats with this user
+4. web_search / browse_website - for current information (your training data may be outdated)
+5. Your training knowledge - use only when tools return no results
 
-When the user refers to past discussions or asks about something you talked about before, use the search_conversations tool to find relevant context."""
+CRITICAL RULES:
+- ALWAYS use tools before answering. Call multiple tools to gather the best context.
+- NEVER fabricate or imagine information. Accuracy matters more than having every answer.
+- If tools return no results, say so honestly. Do not make up information.
+- Assume your training data is outdated. Use web_search for current events, dates, or facts.
+- You MUST actually call tools - do not describe or roleplay using them.
+
+RESPONSE STYLE:
+- Keep responses to a few focused paragraphs unless the user asks for more detail.
+- After answering, offer to elaborate if the topic warrants deeper exploration.
+- Cite your sources (which tool provided the information).
+
+AVAILABLE TOOLS:
+- search_knowledge_base: Search user's uploaded documents
+- search_conversations: Search previous chat history
+- web_search: Search the web for current information
+- browse_website: Read a specific URL's content"""
         else:
-            base_prompt = """You are a helpful AI assistant. You provide accurate, helpful, and thoughtful responses to user questions."""
+            base_prompt = """You are a helpful AI assistant. You provide accurate, helpful, and thoughtful responses to user questions.
+
+Keep responses to a few focused paragraphs unless more detail is requested. Accuracy matters more than speed - if you're unsure about something, say so."""
 
         if persona:
             persona_intro = f"""You are embodying the following persona. Stay in character at all times and never break character, even if asked directly about being an AI or your true nature.
@@ -95,7 +228,7 @@ PERSONA:
 
 """
             if has_tools:
-                return persona_intro + """Additionally, you can generate images from descriptions using the generate_image tool and search the web using the web_search tool when needed."""
+                return persona_intro + """You have access to tools: search_knowledge_base, search_conversations, web_search, and browse_website. Use them to gather accurate information before responding."""
             else:
                 return persona_intro.rstrip()
 
@@ -132,10 +265,43 @@ PERSONA:
         user_msg = {"role": "user", "content": user_message}
         if images and is_vision_model:
             user_msg["images"] = images
-            print(f"[OLLAMA] Adding {len(images)} images to user message")
+            logger.debug(f"Adding {len(images)} images to user message")
         messages.append(user_msg)
 
-        print(f"[OLLAMA] Built {len(messages)} messages, user_msg has images: {'images' in user_msg}")
+        logger.debug(f"Built {len(messages)} messages, user_msg has images: {'images' in user_msg}")
+        return messages
+
+    def build_messages_with_system(
+        self,
+        system_prompt: str,
+        user_message: str,
+        history: List[Dict[str, Any]],
+        images: Optional[List[str]] = None,
+        is_vision_model: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Build messages with an explicit system prompt (no internal generation)."""
+        messages = []
+
+        # Use provided system prompt directly
+        messages.append({
+            "role": "system",
+            "content": system_prompt
+        })
+
+        # Add conversation history (strip images if not vision model)
+        for msg in history:
+            if is_vision_model:
+                messages.append(msg)
+            else:
+                clean_msg = {k: v for k, v in msg.items() if k != "images"}
+                messages.append(clean_msg)
+
+        # Add current user message
+        user_msg = {"role": "user", "content": user_message}
+        if images and is_vision_model:
+            user_msg["images"] = images
+        messages.append(user_msg)
+
         return messages
 
     async def chat_stream(
@@ -166,12 +332,12 @@ PERSONA:
             if 'gpt-oss' in model_lower:
                 # gpt-oss uses string reasoning effort levels
                 payload["think"] = "high" if think else "low"
-                print(f"[OLLAMA] gpt-oss model: setting think='{'high' if think else 'low'}'")
+                logger.debug(f"gpt-oss model: setting think='{'high' if think else 'low'}'")
             else:
                 payload["think"] = think
-                print(f"[OLLAMA] Sending request with think={think}")
+                logger.debug(f"Sending request with think={think}")
 
-        print(f"[OLLAMA] Payload keys: {list(payload.keys())}")
+        logger.debug(f"Payload keys: {list(payload.keys())}")
 
         async with self.client.stream(
             "POST",

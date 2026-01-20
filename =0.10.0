@@ -1,0 +1,22 @@
+Collecting gradio-client
+  Downloading gradio_client-2.0.3-py3-none-any.whl.metadata (7.1 kB)
+Requirement already satisfied: fsspec in ./venv/lib/python3.12/site-packages (from gradio-client) (2025.12.0)
+Requirement already satisfied: httpx>=0.24.1 in ./venv/lib/python3.12/site-packages (from gradio-client) (0.28.1)
+Requirement already satisfied: huggingface-hub<2.0,>=0.19.3 in ./venv/lib/python3.12/site-packages (from gradio-client) (0.36.0)
+Requirement already satisfied: packaging in ./venv/lib/python3.12/site-packages (from gradio-client) (25.0)
+Requirement already satisfied: typing-extensions~=4.0 in ./venv/lib/python3.12/site-packages (from gradio-client) (4.15.0)
+Requirement already satisfied: filelock in ./venv/lib/python3.12/site-packages (from huggingface-hub<2.0,>=0.19.3->gradio-client) (3.20.2)
+Requirement already satisfied: pyyaml>=5.1 in ./venv/lib/python3.12/site-packages (from huggingface-hub<2.0,>=0.19.3->gradio-client) (6.0.3)
+Requirement already satisfied: requests in ./venv/lib/python3.12/site-packages (from huggingface-hub<2.0,>=0.19.3->gradio-client) (2.32.5)
+Requirement already satisfied: tqdm>=4.42.1 in ./venv/lib/python3.12/site-packages (from huggingface-hub<2.0,>=0.19.3->gradio-client) (4.67.1)
+Requirement already satisfied: hf-xet<2.0.0,>=1.1.3 in ./venv/lib/python3.12/site-packages (from huggingface-hub<2.0,>=0.19.3->gradio-client) (1.2.0)
+Requirement already satisfied: anyio in ./venv/lib/python3.12/site-packages (from httpx>=0.24.1->gradio-client) (4.12.0)
+Requirement already satisfied: certifi in ./venv/lib/python3.12/site-packages (from httpx>=0.24.1->gradio-client) (2025.11.12)
+Requirement already satisfied: httpcore==1.* in ./venv/lib/python3.12/site-packages (from httpx>=0.24.1->gradio-client) (1.0.9)
+Requirement already satisfied: idna in ./venv/lib/python3.12/site-packages (from httpx>=0.24.1->gradio-client) (3.11)
+Requirement already satisfied: h11>=0.16 in ./venv/lib/python3.12/site-packages (from httpcore==1.*->httpx>=0.24.1->gradio-client) (0.16.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in ./venv/lib/python3.12/site-packages (from requests->huggingface-hub<2.0,>=0.19.3->gradio-client) (3.4.4)
+Requirement already satisfied: urllib3<3,>=1.21.1 in ./venv/lib/python3.12/site-packages (from requests->huggingface-hub<2.0,>=0.19.3->gradio-client) (2.6.2)
+Downloading gradio_client-2.0.3-py3-none-any.whl (55 kB)
+Installing collected packages: gradio-client
+Successfully installed gradio-client-2.0.3
