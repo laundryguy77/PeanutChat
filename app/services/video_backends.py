@@ -7,14 +7,39 @@ Each backend handles a specific space's UI and workflow.
 """
 
 import asyncio
+import logging
 import os
 import re
+import secrets
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from abc import ABC, abstractmethod
 
 from app.services.gradio_automation import GradioAutomation
+
+logger = logging.getLogger(__name__)
+
+
+def _generate_secure_debug_screenshot_path(prefix: str = "video_error") -> str:
+    """Generate a secure, unpredictable path for debug screenshots."""
+    token = secrets.token_hex(8)
+    temp_dir = tempfile.gettempdir()
+    return os.path.join(temp_dir, f"peanutchat_{prefix}_{token}.png")
+
+
+def _sanitize_error_message(error: Exception) -> str:
+    """Sanitize error message to prevent leaking sensitive information."""
+    error_str = str(error)
+    # Remove potential file paths
+    error_str = re.sub(r'/[^\s]+', '[path]', error_str)
+    # Remove potential URLs with tokens/keys
+    error_str = re.sub(r'https?://[^\s]+', '[url]', error_str)
+    # Truncate to reasonable length
+    if len(error_str) > 200:
+        error_str = error_str[:200] + "..."
+    return error_str
 
 
 class VideoGeneratorBackend(ABC):
@@ -85,7 +110,7 @@ class HuggingFaceImageToVideo(GradioAutomation, VideoGeneratorBackend):
         page.set_default_timeout(self.timeout)
         
         try:
-            print(f"Loading space: {self.space_url}")
+            logger.info(f"Loading space: {self.space_url}")
             await page.goto(self.space_url, wait_until="networkidle")
             await self.wait_for_gradio_load(page)
             
@@ -93,7 +118,7 @@ class HuggingFaceImageToVideo(GradioAutomation, VideoGeneratorBackend):
             await self._dismiss_popups(page)
             
             # Upload the image
-            print("Uploading image...")
+            logger.debug("Uploading image...")
             await self.upload_file(page, image_path, index=0)
             await page.wait_for_timeout(2000)
             
@@ -101,21 +126,21 @@ class HuggingFaceImageToVideo(GradioAutomation, VideoGeneratorBackend):
             if prompt:
                 try:
                     await self.fill_textbox(page, prompt, index=0)
-                except:
+                except Exception:
                     pass  # Prompt field may not exist
                     
             if negative_prompt:
                 try:
                     await self.fill_textbox(page, negative_prompt, label="negative")
-                except:
+                except Exception:
                     pass
             
             # Click generate button
-            print("Starting generation...")
+            logger.info("Starting generation...")
             await self.click_button(page, text="Generate")
             
             # Wait for generation
-            print("Waiting for video generation (this may take several minutes)...")
+            logger.info("Waiting for video generation (this may take several minutes)...")
             await self.wait_for_generation(page, timeout=self.timeout)
             
             # Generate output path if not provided
@@ -142,16 +167,20 @@ class HuggingFaceImageToVideo(GradioAutomation, VideoGeneratorBackend):
                 return await self.download_output(page, output_path)
                 
         except Exception as e:
-            # Take debug screenshot
+            # SECURITY: Use secure random path for debug screenshot
             try:
-                await page.screenshot(path="/tmp/video_gen_error.png")
-            except:
+                screenshot_path = _generate_secure_debug_screenshot_path("img2vid")
+                await page.screenshot(path=screenshot_path)
+                logger.debug(f"Debug screenshot saved to: {screenshot_path}")
+            except Exception:
                 pass
-            return {"success": False, "error": str(e)}
-            
+            # SECURITY: Sanitize error message
+            logger.error(f"Image-to-video generation failed: {type(e).__name__}")
+            return {"success": False, "error": _sanitize_error_message(e)}
+
         finally:
             await context.close()
-            
+
     async def _dismiss_popups(self, page):
         """Dismiss any cookie banners or popups."""
         popup_selectors = [
@@ -167,7 +196,7 @@ class HuggingFaceImageToVideo(GradioAutomation, VideoGeneratorBackend):
                 if await btn.is_visible(timeout=1000):
                     await btn.click()
                     await page.wait_for_timeout(500)
-            except:
+            except Exception:
                 pass
 
 
@@ -225,7 +254,7 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
         page.set_default_timeout(self.timeout)
         
         try:
-            print(f"Loading space: {self.space_url}")
+            logger.info(f"Loading space: {self.space_url}")
             await page.goto(self.space_url, wait_until="networkidle")
             await self.wait_for_gradio_load(page)
             
@@ -236,14 +265,14 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
             try:
                 tab = page.locator('button[role="tab"]:has-text("text-to-video")')
                 if await tab.is_visible(timeout=2000):
-                    print("Clicking text-to-video tab...")
+                    logger.debug("Clicking text-to-video tab...")
                     await tab.click(force=True)
                     await page.wait_for_timeout(2000)
-            except:
+            except Exception:
                 pass  # Tab may not exist on this space
 
             # Fill in the prompt
-            print("Entering prompt...")
+            logger.debug("Entering prompt...")
             textarea = page.locator('textarea').first
             await textarea.fill(prompt)
 
@@ -260,11 +289,11 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
                         if await elem.is_visible(timeout=1000):
                             await elem.fill(negative_prompt)
                             break
-                except:
+                except Exception:
                     pass
 
             # Click generate button
-            print("Starting generation...")
+            logger.info("Starting generation...")
             generate_selectors = [
                 "button:has-text('Generate Text-to-Video')",
                 "button:has-text('Generate')",
@@ -278,11 +307,11 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
                     if await btn.is_visible(timeout=1000):
                         await btn.click()
                         break
-                except:
+                except Exception:
                     continue
             
             # Wait for generation
-            print("Waiting for video generation (this may take several minutes)...")
+            logger.info("Waiting for video generation (this may take several minutes)...")
             await self.wait_for_generation(page, timeout=self.timeout)
             
             # Generate output path if not provided
@@ -309,15 +338,20 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
                 return await self.download_output(page, output_path)
                 
         except Exception as e:
+            # SECURITY: Use secure random path for debug screenshot
             try:
-                await page.screenshot(path="/tmp/video_gen_error.png")
-            except:
+                screenshot_path = _generate_secure_debug_screenshot_path("txt2vid")
+                await page.screenshot(path=screenshot_path)
+                logger.debug(f"Debug screenshot saved to: {screenshot_path}")
+            except Exception:
                 pass
-            return {"success": False, "error": str(e)}
-            
+            # SECURITY: Sanitize error message
+            logger.error(f"Text-to-video generation failed: {type(e).__name__}")
+            return {"success": False, "error": _sanitize_error_message(e)}
+
         finally:
             await context.close()
-            
+
     async def _dismiss_popups(self, page):
         """Dismiss any cookie banners or popups."""
         popup_selectors = [
@@ -333,7 +367,7 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
                 if await btn.is_visible(timeout=1000):
                     await btn.click()
                     await page.wait_for_timeout(500)
-            except:
+            except Exception:
                 pass
 
 

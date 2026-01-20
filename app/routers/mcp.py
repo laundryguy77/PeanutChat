@@ -92,7 +92,8 @@ async def add_server(
     """Add a new MCP server configuration."""
     db = get_database()
 
-    server_id = str(uuid.uuid4())[:8]
+    # SECURITY: Use full UUID to prevent collisions
+    server_id = str(uuid.uuid4())
     created_at = datetime.utcnow().isoformat()
 
     db.execute(

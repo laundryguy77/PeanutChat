@@ -8,14 +8,90 @@ image generation interfaces.
 
 import asyncio
 import base64
+import logging
 import os
 import re
+import secrets
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Any, List
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
+
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# SECURITY CONFIGURATION
+# =============================================================================
+
+# Allowed output directories for save_image() - paths must be within these
+ALLOWED_OUTPUT_DIRS = [
+    Path.home() / "PeanutChat" / "outputs",
+    Path.home() / "PeanutChat" / "generated",
+    Path("/tmp"),  # Allowed for temp files but with secure naming
+    Path.cwd(),  # Current working directory
+]
+
+# Maximum output file size (prevent disk exhaustion)
+MAX_OUTPUT_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+
+
+def _is_path_safe(output_path: str, allowed_dirs: List[Path] = None) -> tuple[bool, str]:
+    """
+    Validate that an output path is safe and within allowed directories.
+
+    Returns:
+        (is_safe, error_message)
+    """
+    if allowed_dirs is None:
+        allowed_dirs = ALLOWED_OUTPUT_DIRS
+
+    try:
+        path = Path(output_path).resolve()
+    except (OSError, RuntimeError) as e:
+        return False, f"Cannot resolve path: {e}"
+
+    # Check for path traversal attempts
+    if '..' in output_path:
+        return False, "Path traversal (..) not allowed"
+
+    # Ensure path is within an allowed directory
+    is_within_allowed = False
+    for allowed_dir in allowed_dirs:
+        try:
+            allowed_resolved = allowed_dir.resolve()
+            # Check if path is equal to or a child of allowed_dir
+            try:
+                path.relative_to(allowed_resolved)
+                is_within_allowed = True
+                break
+            except ValueError:
+                continue
+        except (OSError, RuntimeError):
+            continue
+
+    if not is_within_allowed:
+        return False, f"Path must be within allowed directories"
+
+    # Check filename for dangerous patterns
+    filename = path.name
+    if filename.startswith('.'):
+        return False, "Hidden files not allowed"
+    if any(c in filename for c in ['<', '>', ':', '"', '|', '?', '*', '\x00']):
+        return False, "Invalid characters in filename"
+
+    return True, ""
+
+
+def _generate_secure_screenshot_path() -> str:
+    """Generate a secure, unpredictable path for debug screenshots."""
+    # Use secure random token for unpredictable filename
+    token = secrets.token_hex(16)
+    # Use tempfile to get a secure temporary directory
+    temp_dir = tempfile.gettempdir()
+    return os.path.join(temp_dir, f"peanutchat_debug_{token}.png")
 
 
 class GradioAutomation:
@@ -45,7 +121,18 @@ class GradioAutomation:
     async def start(self):
         """Start the browser."""
         self._playwright = await async_playwright().start()
-        
+
+        # Browser launch arguments
+        # NOTE ON SECURITY FLAGS:
+        # --disable-web-security: Required for accessing cross-origin resources on
+        # Hugging Face Spaces. These spaces often load resources (images, models)
+        # from different subdomains (*.hf.space, huggingface.co, cdn-lfs.huggingface.co).
+        # Without this flag, CORS restrictions prevent fetching generated images.
+        # This is acceptable because:
+        # 1. We only navigate to known, trusted HuggingFace domains
+        # 2. The browser context is isolated and doesn't access user data
+        # 3. Each operation uses a fresh browser context that's destroyed after use
+        # FUTURE: Consider using a proxy server to handle CORS instead
         launch_args = {
             "headless": self.headless,
             "args": [
@@ -53,7 +140,7 @@ class GradioAutomation:
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--disable-web-security",
+                "--disable-web-security",  # Required for HF Spaces - see security note above
             ]
         }
         
@@ -86,7 +173,7 @@ class GradioAutomation:
         await page.wait_for_timeout(2000)
         try:
             await page.wait_for_selector(".loading", state="hidden", timeout=5000)
-        except:
+        except Exception:
             pass
     
     async def dismiss_popups(self, page: Page):
@@ -106,7 +193,7 @@ class GradioAutomation:
                 if await btn.is_visible(timeout=1000):
                     await btn.click()
                     await page.wait_for_timeout(500)
-            except:
+            except Exception:
                 pass
             
     async def fill_textbox(self, page: Page, text: str, label: Optional[str] = None, 
@@ -172,14 +259,14 @@ class GradioAutomation:
                 if await number_input.is_visible(timeout=timeout):
                     await number_input.fill(str(value), timeout=timeout)
                     return
-        except:
+        except Exception:
             pass
 
         # Try range slider
         try:
             slider_input = page.locator("input[type='range']").nth(index)
             await slider_input.fill(str(value), timeout=timeout)
-        except:
+        except Exception:
             pass  # Slider might not exist, that's OK
         
     async def select_dropdown(self, page: Page, value: str, label: Optional[str] = None, index: int = 0):
@@ -202,7 +289,7 @@ class GradioAutomation:
         try:
             await dropdown.select_option(value=value)
             return
-        except:
+        except Exception:
             pass
         
         # Try Gradio custom dropdown
@@ -211,7 +298,7 @@ class GradioAutomation:
             await page.wait_for_timeout(300)
             option = page.locator(f"[role='option']:has-text('{value}'), .dropdown-item:has-text('{value}')").first
             await option.click()
-        except:
+        except Exception:
             pass
         
     async def click_button(self, page: Page, text: Optional[str] = None, index: int = 0):
@@ -243,7 +330,7 @@ class GradioAutomation:
                 ".generating, .loading, .progress, [class*='loading'], [class*='progress'], .eta-bar",
                 timeout=10000
             )
-        except:
+        except Exception:
             pass
 
         # Wait for processing to complete OR output image to appear
@@ -342,7 +429,7 @@ class GradioAutomation:
             try:
                 b64_data = src.split(',')[1]
                 return base64.b64decode(b64_data)
-            except:
+            except Exception:
                 return None
         elif src.startswith('http'):
             # URL - fetch it directly (common for Gradio/HuggingFace)
@@ -350,7 +437,7 @@ class GradioAutomation:
                 with urllib.request.urlopen(src, timeout=30) as resp:
                     return resp.read()
             except Exception as e:
-                print(f"Failed to fetch image from URL: {e}")
+                logger.warning(f"Failed to fetch image from URL: {type(e).__name__}")
                 return None
 
         # Fallback: Try specific selectors
@@ -377,7 +464,7 @@ class GradioAutomation:
                         src = await img.get_attribute("src")
                         if src:
                             return await self._fetch_image_data(page, src)
-            except:
+            except Exception:
                 continue
 
         return None
@@ -414,7 +501,7 @@ class GradioAutomation:
                 return await response.body()
                 
         except Exception as e:
-            print(f"Error fetching image: {e}")
+            logger.warning(f"Error fetching image: {type(e).__name__}")
             return None
             
     async def get_all_output_images(self, page: Page) -> List[bytes]:
@@ -435,7 +522,7 @@ class GradioAutomation:
                             data = await self._fetch_image_data(page, src)
                             if data:
                                 images.append(data)
-                except:
+                except Exception:
                     continue
         
         # Fallback to single image
@@ -447,20 +534,52 @@ class GradioAutomation:
         return images
     
     async def save_image(self, image_data: bytes, output_path: str) -> dict:
-        """Save image data to file."""
+        """Save image data to file with security validation."""
+        # SECURITY: Validate output path
+        is_safe, error = _is_path_safe(output_path)
+        if not is_safe:
+            logger.warning(f"Blocked unsafe save_image path: {error}")
+            return {
+                "success": False,
+                "error": f"Invalid output path: {error}"
+            }
+
+        # SECURITY: Check file size limit
+        if len(image_data) > MAX_OUTPUT_FILE_SIZE:
+            return {
+                "success": False,
+                "error": f"File size exceeds maximum allowed ({MAX_OUTPUT_FILE_SIZE // (1024*1024)}MB)"
+            }
+
         try:
-            path = Path(output_path)
-            path.parent.mkdir(parents=True, exist_ok=True)
+            path = Path(output_path).resolve()
+
+            # Only create parent directory if it's within allowed paths
+            # Don't use parents=True to prevent creating arbitrary directory trees
+            if not path.parent.exists():
+                # Check if parent is in allowed dirs
+                parent_safe, _ = _is_path_safe(str(path.parent))
+                if parent_safe:
+                    path.parent.mkdir(parents=False, exist_ok=True)
+                else:
+                    return {
+                        "success": False,
+                        "error": "Cannot create directory outside allowed paths"
+                    }
+
             path.write_bytes(image_data)
+            logger.info(f"Saved image to: {path}")
             return {
                 "success": True,
-                "path": str(path.absolute()),
+                "path": str(path),
                 "size_bytes": len(image_data)
             }
         except Exception as e:
+            # SECURITY: Don't expose full exception details
+            logger.error(f"Failed to save image: {type(e).__name__}")
             return {
                 "success": False,
-                "error": str(e)
+                "error": "Failed to save image"
             }
     
     async def click_download_button(self, page: Page, output_path: str) -> dict:

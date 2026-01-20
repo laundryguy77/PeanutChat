@@ -7,6 +7,42 @@ from app.config import OLLAMA_BASE_URL, get_settings
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# SECURITY CONFIGURATION
+# =============================================================================
+
+# Pattern for valid Ollama model names
+# Valid format: name:tag where name can have "/" for namespaced models
+# Examples: llama3.2, qwen:7b, library/llama3, user/model:latest
+MODEL_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*(:[\w.+-]+)?$')
+
+# Maximum model name length
+MAX_MODEL_NAME_LENGTH = 256
+
+
+def _validate_model_name(model: str) -> tuple[bool, str]:
+    """
+    Validate an Ollama model name for security.
+
+    Returns:
+        (is_valid, error_message)
+    """
+    if not model:
+        return False, "Model name is required"
+
+    if len(model) > MAX_MODEL_NAME_LENGTH:
+        return False, f"Model name exceeds maximum length ({MAX_MODEL_NAME_LENGTH})"
+
+    # Check for path traversal attempts
+    if '..' in model or model.startswith('/'):
+        return False, "Invalid model name format"
+
+    # Check against pattern
+    if not MODEL_NAME_PATTERN.match(model):
+        return False, "Model name contains invalid characters"
+
+    return True, ""
+
 
 class OllamaService:
     def __init__(self):
@@ -313,6 +349,12 @@ PERSONA:
         think: Optional[bool] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream chat response from Ollama"""
+        # SECURITY: Validate model name
+        is_valid, error = _validate_model_name(model)
+        if not is_valid:
+            logger.error(f"Invalid model name rejected: {error}")
+            raise ValueError(f"Invalid model name: {error}")
+
         payload = {
             "model": model,
             "messages": messages,
@@ -360,6 +402,12 @@ PERSONA:
         options: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """Non-streaming chat completion"""
+        # SECURITY: Validate model name
+        is_valid, error = _validate_model_name(model)
+        if not is_valid:
+            logger.error(f"Invalid model name rejected: {error}")
+            raise ValueError(f"Invalid model name: {error}")
+
         payload = {
             "model": model,
             "messages": messages,

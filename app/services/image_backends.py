@@ -8,14 +8,39 @@ Supports text-to-image, image-to-image, inpainting, and upscaling.
 
 import asyncio
 import base64
+import logging
 import os
 import re
+import secrets
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 from abc import ABC, abstractmethod
 
 from app.services.gradio_automation import GradioAutomation
+
+logger = logging.getLogger(__name__)
+
+
+def _generate_secure_debug_screenshot_path(prefix: str = "img_error") -> str:
+    """Generate a secure, unpredictable path for debug screenshots."""
+    token = secrets.token_hex(8)
+    temp_dir = tempfile.gettempdir()
+    return os.path.join(temp_dir, f"peanutchat_{prefix}_{token}.png")
+
+
+def _sanitize_error_message(error: Exception) -> str:
+    """Sanitize error message to prevent leaking sensitive information."""
+    error_str = str(error)
+    # Remove potential file paths
+    error_str = re.sub(r'/[^\s]+', '[path]', error_str)
+    # Remove potential URLs with tokens/keys
+    error_str = re.sub(r'https?://[^\s]+', '[url]', error_str)
+    # Truncate to reasonable length
+    if len(error_str) > 200:
+        error_str = error_str[:200] + "..."
+    return error_str
 
 
 class ImageGeneratorBackend(ABC):
@@ -93,57 +118,57 @@ class TextToImageBackend(GradioAutomation, ImageGeneratorBackend):
         page.set_default_timeout(self.timeout)
         
         try:
-            print(f"Loading space: {self.space_url}")
+            logger.info(f"Loading space: {self.space_url}")
             await page.goto(self.space_url, wait_until="domcontentloaded")
             await self.wait_for_gradio_load(page)
             await self.dismiss_popups(page)
             
             # Fill in the prompt
-            print("Entering prompt...")
+            logger.debug("Entering prompt...")
             await self.fill_textbox(page, prompt, index=0)
             
             # Try to fill negative prompt
             if negative_prompt:
                 try:
                     await self.fill_textbox(page, negative_prompt, placeholder="negative")
-                except:
+                except Exception:
                     try:
                         await self.fill_textbox(page, negative_prompt, label="Negative")
-                    except:
+                    except Exception:
                         pass
             
             # Try to set dimensions
             try:
                 await self.set_slider(page, width, label="Width")
                 await self.set_slider(page, height, label="Height")
-            except:
+            except Exception:
                 pass
             
             # Try to set seed
             if seed is not None:
                 try:
                     await self.fill_textbox(page, str(seed), label="Seed")
-                except:
+                except Exception:
                     pass
             
             # Try to set guidance scale
             try:
                 await self.set_slider(page, guidance_scale, label="Guidance")
-            except:
+            except Exception:
                 pass
             
             # Click generate button
-            print("Starting generation...")
+            logger.info("Starting generation...")
             generate_buttons = ["Generate", "Create", "Run", "Submit", "Dream"]
             for btn_text in generate_buttons:
                 try:
                     await self.click_button(page, text=btn_text)
                     break
-                except:
+                except Exception:
                     continue
             
             # Wait for generation
-            print("Waiting for image generation...")
+            logger.info("Waiting for image generation...")
             await self.wait_for_generation(page)
             
             # Get output image
@@ -174,12 +199,17 @@ class TextToImageBackend(GradioAutomation, ImageGeneratorBackend):
             return await self.save_image(image_data, output_path)
                 
         except Exception as e:
+            # SECURITY: Use secure random path for debug screenshot
             try:
-                await page.screenshot(path="/tmp/txt2img_error.png")
-            except:
+                screenshot_path = _generate_secure_debug_screenshot_path("txt2img")
+                await page.screenshot(path=screenshot_path)
+                logger.debug(f"Debug screenshot saved to: {screenshot_path}")
+            except Exception:
                 pass
-            return {"success": False, "error": str(e)}
-            
+            # SECURITY: Sanitize error message
+            logger.error(f"Text-to-image generation failed: {type(e).__name__}")
+            return {"success": False, "error": _sanitize_error_message(e)}
+
         finally:
             await context.close()
 
@@ -237,53 +267,53 @@ class ImageToImageBackend(GradioAutomation, ImageGeneratorBackend):
         page.set_default_timeout(self.timeout)
         
         try:
-            print(f"Loading space: {self.space_url}")
+            logger.info(f"Loading space: {self.space_url}")
             await page.goto(self.space_url, wait_until="domcontentloaded")
             await self.wait_for_gradio_load(page)
             await self.dismiss_popups(page)
             
             # Upload source image
-            print("Uploading source image...")
+            logger.debug("Uploading source image...")
             await self.upload_image(page, image_path, index=0)
             await page.wait_for_timeout(2000)
 
             # Fill prompt
-            print("Entering prompt...")
+            logger.debug("Entering prompt...")
             await self.fill_textbox(page, prompt, index=0)
 
             # Negative prompt
             if negative_prompt:
                 try:
                     await self.fill_textbox(page, negative_prompt, placeholder="negative")
-                except:
+                except Exception:
                     pass
             
             # Set strength
             try:
                 await self.set_slider(page, strength, label="Strength")
-            except:
+            except Exception:
                 try:
                     await self.set_slider(page, strength, label="Denoise")
-                except:
+                except Exception:
                     pass
             
             # Set guidance
             try:
                 await self.set_slider(page, guidance_scale, label="Guidance")
-            except:
+            except Exception:
                 pass
             
             # Generate
-            print("Starting transformation...")
+            logger.info("Starting transformation...")
             for btn_text in ["Generate", "Transform", "Run", "Submit"]:
                 try:
                     await self.click_button(page, text=btn_text)
                     break
-                except:
+                except Exception:
                     continue
             
             # Wait
-            print("Waiting for image transformation...")
+            logger.info("Waiting for image transformation...")
             await self.wait_for_generation(page)
             
             # Get output
@@ -306,12 +336,17 @@ class ImageToImageBackend(GradioAutomation, ImageGeneratorBackend):
             return await self.save_image(image_data, output_path)
                 
         except Exception as e:
+            # SECURITY: Use secure random path for debug screenshot
             try:
-                await page.screenshot(path="/tmp/img2img_error.png")
-            except:
+                screenshot_path = _generate_secure_debug_screenshot_path("img2img")
+                await page.screenshot(path=screenshot_path)
+                logger.debug(f"Debug screenshot saved to: {screenshot_path}")
+            except Exception:
                 pass
-            return {"success": False, "error": str(e)}
-            
+            # SECURITY: Sanitize error message
+            logger.error(f"Image-to-image generation failed: {type(e).__name__}")
+            return {"success": False, "error": _sanitize_error_message(e)}
+
         finally:
             await context.close()
 
@@ -371,43 +406,43 @@ class InpaintingBackend(GradioAutomation, ImageGeneratorBackend):
         page.set_default_timeout(self.timeout)
         
         try:
-            print(f"Loading space: {self.space_url}")
+            logger.info(f"Loading space: {self.space_url}")
             await page.goto(self.space_url, wait_until="domcontentloaded")
             await self.wait_for_gradio_load(page)
             await self.dismiss_popups(page)
             
             # Upload source image
-            print("Uploading source image...")
+            logger.debug("Uploading source image...")
             await self.upload_image(page, image_path, index=0)
             await page.wait_for_timeout(1500)
             
             # Upload mask
-            print("Uploading mask...")
+            logger.debug("Uploading mask...")
             await self.upload_image(page, mask_path, index=1)
             await page.wait_for_timeout(1500)
             
             # Fill prompt
-            print("Entering prompt...")
+            logger.debug("Entering prompt...")
             await self.fill_textbox(page, prompt, index=0)
             
             # Negative prompt
             if negative_prompt:
                 try:
                     await self.fill_textbox(page, negative_prompt, placeholder="negative")
-                except:
+                except Exception:
                     pass
             
             # Generate
-            print("Starting inpainting...")
+            logger.info("Starting inpainting...")
             for btn_text in ["Inpaint", "Generate", "Run", "Submit"]:
                 try:
                     await self.click_button(page, text=btn_text)
                     break
-                except:
+                except Exception:
                     continue
             
             # Wait
-            print("Waiting for inpainting to complete...")
+            logger.info("Waiting for inpainting to complete...")
             await self.wait_for_generation(page)
             
             # Get output
@@ -430,12 +465,17 @@ class InpaintingBackend(GradioAutomation, ImageGeneratorBackend):
             return await self.save_image(image_data, output_path)
                 
         except Exception as e:
+            # SECURITY: Use secure random path for debug screenshot
             try:
-                await page.screenshot(path="/tmp/inpaint_error.png")
-            except:
+                screenshot_path = _generate_secure_debug_screenshot_path("inpaint")
+                await page.screenshot(path=screenshot_path)
+                logger.debug(f"Debug screenshot saved to: {screenshot_path}")
+            except Exception:
                 pass
-            return {"success": False, "error": str(e)}
-            
+            # SECURITY: Sanitize error message
+            logger.error(f"Inpainting generation failed: {type(e).__name__}")
+            return {"success": False, "error": _sanitize_error_message(e)}
+
         finally:
             await context.close()
 
@@ -485,36 +525,36 @@ class UpscaleBackend(GradioAutomation, ImageGeneratorBackend):
         page.set_default_timeout(self.timeout)
         
         try:
-            print(f"Loading space: {self.space_url}")
+            logger.info(f"Loading space: {self.space_url}")
             await page.goto(self.space_url, wait_until="domcontentloaded")
             await self.wait_for_gradio_load(page)
             await self.dismiss_popups(page)
             
             # Upload image
-            print("Uploading image...")
+            logger.debug("Uploading image...")
             await self.upload_image(page, image_path, index=0)
             await page.wait_for_timeout(2000)
             
             # Try to set scale
             try:
                 await self.set_slider(page, scale, label="Scale")
-            except:
+            except Exception:
                 try:
                     await self.select_dropdown(page, f"{int(scale)}x", label="Scale")
-                except:
+                except Exception:
                     pass
             
             # Generate
-            print("Starting upscale...")
+            logger.info("Starting upscale...")
             for btn_text in ["Upscale", "Enhance", "Generate", "Run", "Submit"]:
                 try:
                     await self.click_button(page, text=btn_text)
                     break
-                except:
+                except Exception:
                     continue
             
             # Wait
-            print("Waiting for upscaling to complete...")
+            logger.info("Waiting for upscaling to complete...")
             await self.wait_for_generation(page)
             
             # Get output
@@ -541,12 +581,17 @@ class UpscaleBackend(GradioAutomation, ImageGeneratorBackend):
             return await self.save_image(image_data, output_path)
                 
         except Exception as e:
+            # SECURITY: Use secure random path for debug screenshot
             try:
-                await page.screenshot(path="/tmp/upscale_error.png")
-            except:
+                screenshot_path = _generate_secure_debug_screenshot_path("upscale")
+                await page.screenshot(path=screenshot_path)
+                logger.debug(f"Debug screenshot saved to: {screenshot_path}")
+            except Exception:
                 pass
-            return {"success": False, "error": str(e)}
-            
+            # SECURITY: Sanitize error message
+            logger.error(f"Upscale generation failed: {type(e).__name__}")
+            return {"success": False, "error": _sanitize_error_message(e)}
+
         finally:
             await context.close()
 
