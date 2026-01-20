@@ -247,7 +247,8 @@ async def compact_conversation(
     indices_to_compact: List[int],
     model: str,
     existing_summary: Optional[str] = None,
-    existing_summary_tokens: int = 0
+    existing_summary_tokens: int = 0,
+    user_id: Optional[int] = None
 ) -> Optional[CompactionRecord]:
     """Perform compaction on a conversation.
 
@@ -258,9 +259,13 @@ async def compact_conversation(
         model: Model for summarization
         existing_summary: Previous summary to merge
         existing_summary_tokens: Token count of existing summary
+        user_id: User ID for ownership verification (required for security)
 
     Returns:
         CompactionRecord if successful, None otherwise
+
+    Security: If user_id is provided, verifies that the conversation
+    belongs to that user before performing compaction.
     """
     if not indices_to_compact:
         return None
@@ -286,15 +291,39 @@ async def compact_conversation(
         logger.error(f"Conversation {conv_id} not found")
         return None
 
+    # SECURITY: Verify ownership if user_id is provided
+    if user_id is not None and conv.user_id != user_id:
+        logger.error(
+            f"Compaction denied: user {user_id} attempted to compact "
+            f"conversation {conv_id} owned by user {conv.user_id}"
+        )
+        return None
+
     # Map indices to message IDs
+    # CRITICAL: The indices_to_compact are indices into the API message list,
+    # which includes a dynamically-added system prompt at index 0.
+    # But conv.messages does NOT include this system prompt.
+    # So we need to adjust: if messages[0] is role=system, subtract 1 from all indices.
     message_ids = []
+
+    # Determine the offset: if messages has system at index 0, indices are off by 1
+    has_system_prefix = (
+        messages and
+        len(messages) > 0 and
+        messages[0].get("role") == "system"
+    )
+    offset = 1 if has_system_prefix else 0
+
     for idx in indices_to_compact:
-        # Account for system message offset - messages passed here don't have
-        # the internal message IDs, so we need to match by position
-        # The indices are into the messages list which may or may not have
-        # system prompt at index 0
-        if idx < len(conv.messages):
-            message_ids.append(conv.messages[idx].id)
+        # Adjust index to account for system message offset
+        conv_idx = idx - offset
+        if 0 <= conv_idx < len(conv.messages):
+            message_ids.append(conv.messages[conv_idx].id)
+        else:
+            logger.warning(
+                f"Compaction index {idx} (adjusted to {conv_idx}) "
+                f"out of range for conversation with {len(conv.messages)} messages"
+            )
 
     # Create compaction record
     record = CompactionRecord(

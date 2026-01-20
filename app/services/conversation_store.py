@@ -2,6 +2,9 @@
 import json
 import logging
 import uuid
+import threading
+import tempfile
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -101,12 +104,20 @@ class Conversation:
 
 
 class ConversationStore:
-    """Manages persistent conversation storage"""
+    """Manages persistent conversation storage.
+
+    Thread Safety:
+    - Uses asyncio.Lock for async operations (disk I/O)
+    - Uses threading.RLock for synchronous cache reads
+    - All cache modifications must acquire both locks when in async context,
+      or at least the threading lock for sync-only operations
+    """
 
     def __init__(self, storage_dir: str = "conversations"):
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(exist_ok=True)
-        self._lock = asyncio.Lock()
+        self._async_lock = asyncio.Lock()  # For async operations (disk I/O)
+        self._sync_lock = threading.RLock()  # For synchronous cache access
         self._cache: Dict[str, Conversation] = {}
         self._load_all()
 
@@ -134,14 +145,37 @@ class ConversationStore:
             logger.warning(f"Failed to load {len(failed_files)} conversations")
 
     async def _save(self, conversation: Conversation):
-        """Save a conversation to disk"""
+        """Save a conversation to disk atomically.
+
+        Uses write-to-temp-then-rename pattern to prevent corruption
+        if the process crashes during write.
+        """
         file_path = self.storage_dir / f"{conversation.id}.json"
-        with open(file_path, "w") as f:
-            json.dump(conversation.to_dict(), f, indent=2)
+
+        # Write to temporary file first
+        fd, temp_path = tempfile.mkstemp(
+            suffix='.json.tmp',
+            dir=self.storage_dir
+        )
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(conversation.to_dict(), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # Ensure data is on disk
+
+            # Atomic rename (on POSIX systems)
+            os.replace(temp_path, file_path)
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
 
     async def create(self, model: str = "", user_id: Optional[int] = None) -> Conversation:
         """Create a new conversation for a user"""
-        async with self._lock:
+        async with self._async_lock:
             conv_id = str(uuid.uuid4())[:8]
             now = datetime.now().isoformat()
             conv = Conversation(
@@ -153,29 +187,75 @@ class ConversationStore:
                 user_id=user_id,
                 model=model
             )
-            self._cache[conv_id] = conv
+            with self._sync_lock:
+                self._cache[conv_id] = conv
             await self._save(conv)
             return conv
 
     def get(self, conv_id: str, user_id: Optional[int] = None) -> Optional[Conversation]:
-        """Get a conversation by ID, optionally verifying ownership"""
-        conv = self._cache.get(conv_id)
-        if conv and user_id is not None:
-            # Verify ownership (allow legacy conversations with no user_id)
-            if conv.user_id is not None and conv.user_id != user_id:
-                return None
-        return conv
+        """Get a conversation by ID, optionally verifying ownership.
+
+        Security: When user_id is provided, ONLY returns conversations owned by that user.
+        Legacy conversations (user_id=None) are no longer accessible when user_id filtering is enabled.
+
+        Args:
+            conv_id: The conversation ID to retrieve
+            user_id: If provided, verify the conversation belongs to this user
+
+        Returns:
+            Conversation if found and authorized, None otherwise
+        """
+        with self._sync_lock:
+            conv = self._cache.get(conv_id)
+            if conv and user_id is not None:
+                # SECURITY FIX: Only allow access to conversations explicitly owned by the user
+                # Legacy conversations (user_id=None) should NOT be accessible to authenticated users
+                # This prevents cross-user data leakage via legacy unowned conversations
+                if conv.user_id != user_id:
+                    logger.warning(
+                        f"Access denied: user {user_id} attempted to access "
+                        f"conversation {conv_id} owned by user {conv.user_id}"
+                    )
+                    return None
+            return conv
 
     def list_for_user(self, user_id: int) -> List[Dict]:
-        """List conversations for a specific user"""
-        conversations = []
-        for conv in sorted(
-            self._cache.values(),
-            key=lambda c: c.updated_at,
-            reverse=True
-        ):
-            # Include if owned by user OR legacy conversation (no user_id)
-            if conv.user_id == user_id or conv.user_id is None:
+        """List conversations for a specific user.
+
+        Security: Only returns conversations explicitly owned by the user.
+        Legacy conversations (user_id=None) are excluded to prevent data leakage.
+        """
+        with self._sync_lock:
+            conversations = []
+            for conv in sorted(
+                self._cache.values(),
+                key=lambda c: c.updated_at,
+                reverse=True
+            ):
+                # SECURITY FIX: Only include conversations explicitly owned by this user
+                # Legacy conversations (user_id=None) are excluded
+                if conv.user_id == user_id:
+                    conversations.append({
+                        "id": conv.id,
+                        "title": conv.title,
+                        "created_at": conv.created_at,
+                        "updated_at": conv.updated_at,
+                        "message_count": len(conv.messages),
+                        "model": conv.model,
+                        "forked_from": conv.forked_from,
+                        "user_id": conv.user_id
+                    })
+            return conversations
+
+    def list_all(self) -> List[Dict]:
+        """List all conversations (metadata only) - deprecated, use list_for_user"""
+        with self._sync_lock:
+            conversations = []
+            for conv in sorted(
+                self._cache.values(),
+                key=lambda c: c.updated_at,
+                reverse=True
+            ):
                 conversations.append({
                     "id": conv.id,
                     "title": conv.title,
@@ -186,27 +266,7 @@ class ConversationStore:
                     "forked_from": conv.forked_from,
                     "user_id": conv.user_id
                 })
-        return conversations
-
-    def list_all(self) -> List[Dict]:
-        """List all conversations (metadata only) - deprecated, use list_for_user"""
-        conversations = []
-        for conv in sorted(
-            self._cache.values(),
-            key=lambda c: c.updated_at,
-            reverse=True
-        ):
-            conversations.append({
-                "id": conv.id,
-                "title": conv.title,
-                "created_at": conv.created_at,
-                "updated_at": conv.updated_at,
-                "message_count": len(conv.messages),
-                "model": conv.model,
-                "forked_from": conv.forked_from,
-                "user_id": conv.user_id
-            })
-        return conversations
+            return conversations
 
     async def add_message(
         self,
@@ -220,27 +280,28 @@ class ConversationStore:
         tools_available: Optional[List[str]] = None
     ) -> Optional[Message]:
         """Add a message to a conversation"""
-        async with self._lock:
-            conv = self._cache.get(conv_id)
-            if not conv:
-                return None
+        async with self._async_lock:
+            with self._sync_lock:
+                conv = self._cache.get(conv_id)
+                if not conv:
+                    return None
 
-            msg = Message(
-                id=str(uuid.uuid4())[:8],
-                role=role,
-                content=content,
-                images=images,
-                tool_calls=tool_calls,
-                thinking_content=thinking_content,
-                memories_used=memories_used,
-                tools_available=tools_available
-            )
-            conv.messages.append(msg)
-            conv.updated_at = datetime.now().isoformat()
+                msg = Message(
+                    id=str(uuid.uuid4())[:8],
+                    role=role,
+                    content=content,
+                    images=images,
+                    tool_calls=tool_calls,
+                    thinking_content=thinking_content,
+                    memories_used=memories_used,
+                    tools_available=tools_available
+                )
+                conv.messages.append(msg)
+                conv.updated_at = datetime.now().isoformat()
 
-            # Auto-generate title from first user message
-            if conv.title == "New Chat" and role == "user" and content:
-                conv.title = content[:50] + ("..." if len(content) > 50 else "")
+                # Auto-generate title from first user message
+                if conv.title == "New Chat" and role == "user" and content:
+                    conv.title = content[:50] + ("..." if len(content) > 50 else "")
 
             await self._save(conv)
             return msg
@@ -252,18 +313,22 @@ class ConversationStore:
         new_content: str
     ) -> Optional[Message]:
         """Update a message's content"""
-        async with self._lock:
-            conv = self._cache.get(conv_id)
-            if not conv:
-                return None
+        async with self._async_lock:
+            with self._sync_lock:
+                conv = self._cache.get(conv_id)
+                if not conv:
+                    return None
 
-            for msg in conv.messages:
-                if msg.id == msg_id:
-                    msg.content = new_content
-                    conv.updated_at = datetime.now().isoformat()
-                    await self._save(conv)
-                    return msg
-            return None
+                for msg in conv.messages:
+                    if msg.id == msg_id:
+                        msg.content = new_content
+                        conv.updated_at = datetime.now().isoformat()
+                        break
+                else:
+                    return None
+
+            await self._save(conv)
+            return msg
 
     async def fork_at_message(
         self,
@@ -272,78 +337,90 @@ class ConversationStore:
         new_content: str
     ) -> Optional[Conversation]:
         """Fork a conversation at a specific message with new content"""
-        async with self._lock:
-            original = self._cache.get(conv_id)
-            if not original:
-                return None
+        async with self._async_lock:
+            with self._sync_lock:
+                original = self._cache.get(conv_id)
+                if not original:
+                    return None
 
-            # Find message index
-            msg_index = None
-            for i, msg in enumerate(original.messages):
-                if msg.id == msg_id:
-                    msg_index = i
-                    break
+                # Find message index
+                msg_index = None
+                for i, msg in enumerate(original.messages):
+                    if msg.id == msg_id:
+                        msg_index = i
+                        break
 
-            if msg_index is None:
-                return None
+                if msg_index is None:
+                    return None
 
-            # Create new conversation with messages up to (not including) the edited message
-            now = datetime.now().isoformat()
-            new_id = str(uuid.uuid4())[:8]
+                # Create new conversation with messages up to (not including) the edited message
+                now = datetime.now().isoformat()
+                new_id = str(uuid.uuid4())[:8]
 
-            # Copy messages up to the fork point
-            new_messages = []
-            for msg in original.messages[:msg_index]:
-                new_msg = Message(
+                # Copy messages up to the fork point
+                new_messages = []
+                for msg in original.messages[:msg_index]:
+                    new_msg = Message(
+                        id=str(uuid.uuid4())[:8],
+                        role=msg.role,
+                        content=msg.content,
+                        images=msg.images,
+                        tool_calls=msg.tool_calls,
+                        parent_id=msg.id
+                    )
+                    new_messages.append(new_msg)
+
+                # Add the edited message
+                edited_msg = Message(
                     id=str(uuid.uuid4())[:8],
-                    role=msg.role,
-                    content=msg.content,
-                    images=msg.images,
-                    tool_calls=msg.tool_calls,
-                    parent_id=msg.id
+                    role=original.messages[msg_index].role,
+                    content=new_content,
+                    images=original.messages[msg_index].images,
+                    parent_id=msg_id
                 )
-                new_messages.append(new_msg)
+                new_messages.append(edited_msg)
 
-            # Add the edited message
-            edited_msg = Message(
-                id=str(uuid.uuid4())[:8],
-                role=original.messages[msg_index].role,
-                content=new_content,
-                images=original.messages[msg_index].images,
-                parent_id=msg_id
-            )
-            new_messages.append(edited_msg)
+                new_conv = Conversation(
+                    id=new_id,
+                    title=f"Fork: {original.title[:40]}",
+                    messages=new_messages,
+                    created_at=now,
+                    updated_at=now,
+                    user_id=original.user_id,  # Preserve user ownership
+                    model=original.model,
+                    forked_from=conv_id,
+                    fork_point=msg_id,
+                    # Copy compaction state
+                    compaction_history=original.compaction_history.copy(),
+                    current_summary=original.current_summary,
+                    summary_token_count=original.summary_token_count
+                )
 
-            new_conv = Conversation(
-                id=new_id,
-                title=f"Fork: {original.title[:40]}",
-                messages=new_messages,
-                created_at=now,
-                updated_at=now,
-                user_id=original.user_id,  # Preserve user ownership
-                model=original.model,
-                forked_from=conv_id,
-                fork_point=msg_id,
-                # Copy compaction state
-                compaction_history=original.compaction_history.copy(),
-                current_summary=original.current_summary,
-                summary_token_count=original.summary_token_count
-            )
+                self._cache[new_id] = new_conv
 
-            self._cache[new_id] = new_conv
             await self._save(new_conv)
             return new_conv
 
     async def delete(self, conv_id: str) -> bool:
-        """Delete a conversation"""
-        async with self._lock:
-            if conv_id not in self._cache:
-                return False
+        """Delete a conversation.
 
-            del self._cache[conv_id]
+        Security: Deletes file first, then cache entry to prevent resurrection on restart.
+        """
+        async with self._async_lock:
+            with self._sync_lock:
+                if conv_id not in self._cache:
+                    return False
+
+            # Delete file FIRST to prevent resurrection on restart
             file_path = self.storage_dir / f"{conv_id}.json"
             if file_path.exists():
                 file_path.unlink()
+
+            # Then remove from cache
+            with self._sync_lock:
+                if conv_id in self._cache:
+                    del self._cache[conv_id]
+
             return True
 
     async def delete_for_user(self, user_id: int) -> int:
@@ -355,19 +432,24 @@ class ConversationStore:
         Returns:
             Number of conversations deleted
         """
-        async with self._lock:
-            # Find all conversations owned by this user
-            to_delete = [
-                conv_id for conv_id, conv in self._cache.items()
-                if conv.user_id == user_id
-            ]
+        async with self._async_lock:
+            with self._sync_lock:
+                # Find all conversations owned by this user
+                to_delete = [
+                    conv_id for conv_id, conv in self._cache.items()
+                    if conv.user_id == user_id
+                ]
 
             deleted_count = 0
             for conv_id in to_delete:
-                del self._cache[conv_id]
+                # Delete file FIRST
                 file_path = self.storage_dir / f"{conv_id}.json"
                 if file_path.exists():
                     file_path.unlink()
+                # Then cache
+                with self._sync_lock:
+                    if conv_id in self._cache:
+                        del self._cache[conv_id]
                 deleted_count += 1
 
             if deleted_count > 0:
@@ -377,58 +459,76 @@ class ConversationStore:
 
     async def rename(self, conv_id: str, new_title: str) -> bool:
         """Rename a conversation"""
-        async with self._lock:
-            conv = self._cache.get(conv_id)
-            if not conv:
-                return False
+        async with self._async_lock:
+            with self._sync_lock:
+                conv = self._cache.get(conv_id)
+                if not conv:
+                    return False
 
-            conv.title = new_title
-            conv.updated_at = datetime.now().isoformat()
+                conv.title = new_title
+                conv.updated_at = datetime.now().isoformat()
+
             await self._save(conv)
             return True
 
     def get_messages_for_api(
         self,
         conv_id: str,
-        exclude_compacted: bool = False
+        exclude_compacted: bool = False,
+        user_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """Get messages in Ollama API format.
 
         Args:
             conv_id: Conversation ID
             exclude_compacted: If True, exclude messages marked as compacted
-        """
-        conv = self._cache.get(conv_id)
-        if not conv:
-            return []
+            user_id: If provided, verify ownership before returning messages
 
-        messages = []
-        for msg in conv.messages:
-            # Skip compacted messages if requested
-            if exclude_compacted and msg.compacted:
-                continue
-            m = {"role": msg.role, "content": msg.content}
-            if msg.images:
-                m["images"] = msg.images
-            if msg.tool_calls:
-                m["tool_calls"] = msg.tool_calls
-            messages.append(m)
-        return messages
+        Security: When user_id is provided, only returns messages if the
+        conversation belongs to that user.
+        """
+        with self._sync_lock:
+            conv = self._cache.get(conv_id)
+            if not conv:
+                return []
+
+            # SECURITY FIX: Verify ownership when user_id is provided
+            if user_id is not None and conv.user_id != user_id:
+                logger.warning(
+                    f"get_messages_for_api: Access denied for user {user_id} "
+                    f"to conversation {conv_id} owned by {conv.user_id}"
+                )
+                return []
+
+            messages = []
+            for msg in conv.messages:
+                # Skip compacted messages if requested
+                if exclude_compacted and msg.compacted:
+                    continue
+                m = {"role": msg.role, "content": msg.content}
+                if msg.images:
+                    m["images"] = msg.images
+                if msg.tool_calls:
+                    m["tool_calls"] = msg.tool_calls
+                messages.append(m)
+            return messages
 
     async def clear_messages(self, conv_id: str) -> bool:
         """Clear all messages from a conversation"""
-        async with self._lock:
-            conv = self._cache.get(conv_id)
-            if not conv:
-                return False
+        async with self._async_lock:
+            with self._sync_lock:
+                conv = self._cache.get(conv_id)
+                if not conv:
+                    return False
 
-            conv.messages = []
-            conv.title = "New Chat"
-            conv.updated_at = datetime.now().isoformat()
-            # Clear compaction state
-            conv.compaction_history = []
-            conv.current_summary = None
-            conv.summary_token_count = 0
+                conv.messages = []
+                conv.title = "New Chat"
+                conv.updated_at = datetime.now().isoformat()
+                # Clear compaction state
+                conv.compaction_history = []
+                conv.current_summary = None
+                conv.summary_token_count = 0
+
             await self._save(conv)
             return True
 
@@ -443,13 +543,15 @@ class ConversationStore:
         Returns:
             True if successful, False if conversation not found
         """
-        async with self._lock:
-            conv = self._cache.get(conv_id)
-            if not conv:
-                return False
+        async with self._async_lock:
+            with self._sync_lock:
+                conv = self._cache.get(conv_id)
+                if not conv:
+                    return False
 
-            conv.messages = conv.messages[:keep_count]
-            conv.updated_at = datetime.now().isoformat()
+                conv.messages = conv.messages[:keep_count]
+                conv.updated_at = datetime.now().isoformat()
+
             await self._save(conv)
             return True
 
@@ -459,13 +561,15 @@ class ConversationStore:
         record: CompactionRecord
     ) -> bool:
         """Add a compaction record to a conversation"""
-        async with self._lock:
-            conv = self._cache.get(conv_id)
-            if not conv:
-                return False
+        async with self._async_lock:
+            with self._sync_lock:
+                conv = self._cache.get(conv_id)
+                if not conv:
+                    return False
 
-            conv.compaction_history.append(record)
-            conv.updated_at = datetime.now().isoformat()
+                conv.compaction_history.append(record)
+                conv.updated_at = datetime.now().isoformat()
+
             await self._save(conv)
             return True
 
@@ -476,14 +580,16 @@ class ConversationStore:
         token_count: int
     ) -> bool:
         """Update the current summary for a conversation"""
-        async with self._lock:
-            conv = self._cache.get(conv_id)
-            if not conv:
-                return False
+        async with self._async_lock:
+            with self._sync_lock:
+                conv = self._cache.get(conv_id)
+                if not conv:
+                    return False
 
-            conv.current_summary = summary
-            conv.summary_token_count = token_count
-            conv.updated_at = datetime.now().isoformat()
+                conv.current_summary = summary
+                conv.summary_token_count = token_count
+                conv.updated_at = datetime.now().isoformat()
+
             await self._save(conv)
             return True
 
@@ -493,33 +599,37 @@ class ConversationStore:
         message_ids: List[str]
     ) -> bool:
         """Mark messages as compacted"""
-        async with self._lock:
-            conv = self._cache.get(conv_id)
-            if not conv:
-                return False
+        async with self._async_lock:
+            with self._sync_lock:
+                conv = self._cache.get(conv_id)
+                if not conv:
+                    return False
 
-            id_set = set(message_ids)
-            for msg in conv.messages:
-                if msg.id in id_set:
-                    msg.compacted = True
+                id_set = set(message_ids)
+                for msg in conv.messages:
+                    if msg.id in id_set:
+                        msg.compacted = True
 
-            conv.updated_at = datetime.now().isoformat()
+                conv.updated_at = datetime.now().isoformat()
+
             await self._save(conv)
             return True
 
     def get_summary(self, conv_id: str) -> Optional[str]:
         """Get the current summary for a conversation"""
-        conv = self._cache.get(conv_id)
-        if not conv:
-            return None
-        return conv.current_summary
+        with self._sync_lock:
+            conv = self._cache.get(conv_id)
+            if not conv:
+                return None
+            return conv.current_summary
 
     def get_summary_token_count(self, conv_id: str) -> int:
         """Get the summary token count for a conversation"""
-        conv = self._cache.get(conv_id)
-        if not conv:
-            return 0
-        return conv.summary_token_count
+        with self._sync_lock:
+            conv = self._cache.get(conv_id)
+            if not conv:
+                return 0
+            return conv.summary_token_count
 
     def search_conversations(
         self,
@@ -530,56 +640,60 @@ class ConversationStore:
     ) -> List[Dict]:
         """
         Search through conversations for matching content.
-        If user_id is provided, only searches that user's conversations.
+
+        Security: When user_id is provided, ONLY searches conversations owned by that user.
+        Legacy conversations (user_id=None) are excluded from search results.
         """
-        results = []
-        query_lower = query.lower()
-        query_words = query_lower.split()
+        with self._sync_lock:
+            results = []
+            query_lower = query.lower()
+            query_words = query_lower.split()
 
-        for conv_id, conv in self._cache.items():
-            # Skip the current conversation
-            if conv_id == exclude_conv_id:
-                continue
-
-            # Filter by user if specified
-            if user_id is not None:
-                if conv.user_id is not None and conv.user_id != user_id:
+            for conv_id, conv in self._cache.items():
+                # Skip the current conversation
+                if conv_id == exclude_conv_id:
                     continue
 
-            # Search through messages
-            for msg in conv.messages:
-                content_lower = msg.content.lower()
+                # SECURITY FIX: Only search conversations explicitly owned by the user
+                # Legacy conversations are excluded to prevent data leakage
+                if user_id is not None:
+                    if conv.user_id != user_id:
+                        continue
 
-                # Check if any query words are in the message
-                matches = sum(1 for word in query_words if word in content_lower)
+                # Search through messages
+                for msg in conv.messages:
+                    content_lower = msg.content.lower()
 
-                if matches > 0:
-                    # Calculate relevance score (simple word match ratio)
-                    score = matches / len(query_words)
+                    # Check if any query words are in the message
+                    matches = sum(1 for word in query_words if word in content_lower)
 
-                    # Get a snippet around the first match
-                    first_word = next((w for w in query_words if w in content_lower), query_words[0])
-                    match_pos = content_lower.find(first_word)
-                    start = max(0, match_pos - 100)
-                    end = min(len(msg.content), match_pos + 200)
-                    snippet = msg.content[start:end]
-                    if start > 0:
-                        snippet = "..." + snippet
-                    if end < len(msg.content):
-                        snippet = snippet + "..."
+                    if matches > 0:
+                        # Calculate relevance score (simple word match ratio)
+                        score = matches / len(query_words)
 
-                    results.append({
-                        "conversation_id": conv_id,
-                        "conversation_title": conv.title,
-                        "message_role": msg.role,
-                        "snippet": snippet,
-                        "score": score,
-                        "timestamp": msg.timestamp
-                    })
+                        # Get a snippet around the first match
+                        first_word = next((w for w in query_words if w in content_lower), query_words[0])
+                        match_pos = content_lower.find(first_word)
+                        start = max(0, match_pos - 100)
+                        end = min(len(msg.content), match_pos + 200)
+                        snippet = msg.content[start:end]
+                        if start > 0:
+                            snippet = "..." + snippet
+                        if end < len(msg.content):
+                            snippet = snippet + "..."
 
-        # Sort by score (descending) and limit results
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return results[:max_results]
+                        results.append({
+                            "conversation_id": conv_id,
+                            "conversation_title": conv.title,
+                            "message_role": msg.role,
+                            "snippet": snippet,
+                            "score": score,
+                            "timestamp": msg.timestamp
+                        })
+
+            # Sort by score (descending) and limit results
+            results.sort(key=lambda x: x["score"], reverse=True)
+            return results[:max_results]
 
 
 # Global instance

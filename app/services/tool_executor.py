@@ -1,4 +1,6 @@
 from typing import Dict, Any, Optional, List
+from dataclasses import dataclass, field
+from contextvars import ContextVar
 import httpx
 import json
 import logging
@@ -22,32 +24,134 @@ _url_cache: Dict[str, Dict[str, Any]] = {}
 URL_CACHE_TTL = 300  # 5 minutes
 
 
-class ToolExecutor:
-    def __init__(self):
-        self.image_registry: Dict[str, str] = {}  # Track shared images
-        self.current_conversation_id: Optional[str] = None  # Current conversation for search
-        self.current_user_id: Optional[int] = None  # Current user for knowledge base
+@dataclass
+class ToolExecutionContext:
+    """Request-scoped context for tool execution.
 
-    def set_current_conversation(self, conv_id: str):
-        """Set the current conversation ID for context-aware tools"""
-        self.current_conversation_id = conv_id
-
-    def set_current_user(self, user_id: int):
-        """Set the current user ID for user-scoped tools"""
-        self.current_user_id = user_id
+    This replaces the shared mutable state that was previously stored
+    on the ToolExecutor singleton, preventing race conditions between
+    concurrent requests.
+    """
+    user_id: Optional[int] = None
+    conversation_id: Optional[str] = None
+    image_registry: Dict[str, str] = field(default_factory=dict)
 
     def register_image(self, message_index: int, image_base64: str):
         """Register an image from a message for later tool use"""
         self.image_registry[f"image_{message_index}"] = image_base64
         self.image_registry["last_shared_image"] = image_base64
 
+    def get_image(self, reference: str) -> Optional[str]:
+        """Get image by reference"""
+        return self.image_registry.get(reference)
+
     def clear_images(self):
         """Clear the image registry"""
         self.image_registry.clear()
 
+
+# Request-scoped context variable for tool execution
+_current_context: ContextVar[Optional[ToolExecutionContext]] = ContextVar(
+    'tool_execution_context', default=None
+)
+
+
+def get_current_context() -> Optional[ToolExecutionContext]:
+    """Get the current request's tool execution context."""
+    return _current_context.get()
+
+
+def set_current_context(ctx: ToolExecutionContext) -> None:
+    """Set the current request's tool execution context."""
+    _current_context.set(ctx)
+
+
+def create_context(user_id: Optional[int] = None, conversation_id: Optional[str] = None) -> ToolExecutionContext:
+    """Create and set a new tool execution context for the current request."""
+    ctx = ToolExecutionContext(user_id=user_id, conversation_id=conversation_id)
+    _current_context.set(ctx)
+    return ctx
+
+
+class ToolExecutor:
+    """Tool execution engine.
+
+    NOTE: This class is stateless. All request-specific state should be passed
+    via the ToolExecutionContext or explicit parameters to execute().
+
+    The set_current_user() and set_current_conversation() methods are deprecated
+    and provided only for backwards compatibility. Use create_context() instead.
+    """
+
+    def __init__(self):
+        # DEPRECATED: These are kept only for backwards compatibility
+        # DO NOT use these in new code - use ToolExecutionContext instead
+        self._deprecated_user_id: Optional[int] = None
+        self._deprecated_conv_id: Optional[str] = None
+        self._deprecated_image_registry: Dict[str, str] = {}
+
+    def set_current_conversation(self, conv_id: str):
+        """DEPRECATED: Use create_context() instead.
+
+        Sets conversation ID in context if available, otherwise logs warning.
+        """
+        ctx = get_current_context()
+        if ctx:
+            ctx.conversation_id = conv_id
+        else:
+            # Fallback for legacy code paths - log warning
+            logger.warning(
+                "set_current_conversation called without context. "
+                "Use create_context() for thread-safe operation."
+            )
+            self._deprecated_conv_id = conv_id
+
+    def set_current_user(self, user_id: int):
+        """DEPRECATED: Use create_context() instead.
+
+        Sets user ID in context if available, otherwise logs warning.
+        """
+        ctx = get_current_context()
+        if ctx:
+            ctx.user_id = user_id
+        else:
+            # Fallback for legacy code paths - log warning
+            logger.warning(
+                "set_current_user called without context. "
+                "Use create_context() for thread-safe operation."
+            )
+            self._deprecated_user_id = user_id
+
+    def register_image(self, message_index: int, image_base64: str):
+        """Register an image for the current request.
+
+        Prefers context-scoped registry, falls back to deprecated instance registry.
+        """
+        ctx = get_current_context()
+        if ctx:
+            ctx.register_image(message_index, image_base64)
+        else:
+            logger.warning(
+                "register_image called without context. "
+                "Use create_context() for thread-safe operation."
+            )
+            self._deprecated_image_registry[f"image_{message_index}"] = image_base64
+            self._deprecated_image_registry["last_shared_image"] = image_base64
+
+    def clear_images(self):
+        """Clear the image registry for the current request."""
+        ctx = get_current_context()
+        if ctx:
+            ctx.clear_images()
+        else:
+            self._deprecated_image_registry.clear()
+
     def get_image(self, reference: str) -> Optional[str]:
-        """Get image by reference"""
-        return self.image_registry.get(reference)
+        """Get image by reference from the current request's context."""
+        ctx = get_current_context()
+        if ctx:
+            return ctx.get_image(reference)
+        return self._deprecated_image_registry.get(reference)
 
     async def execute(
         self,
@@ -59,12 +163,30 @@ class ToolExecutor:
 
         Args:
             tool_call: The tool call to execute
-            user_id: User ID for user-scoped tools (overrides current_user_id)
-            conversation_id: Conversation ID for conversation-scoped tools (overrides current_conversation_id)
+            user_id: User ID for user-scoped tools (preferred over context)
+            conversation_id: Conversation ID for conversation-scoped tools (preferred over context)
+
+        Priority for context values:
+        1. Explicit parameters passed to this method
+        2. Values from ToolExecutionContext (request-scoped)
+        3. Deprecated instance state (legacy fallback)
         """
-        # Use explicit parameters if provided, otherwise fall back to instance state
-        effective_user_id = user_id if user_id is not None else self.current_user_id
-        effective_conv_id = conversation_id if conversation_id is not None else self.current_conversation_id
+        # Get context-scoped values
+        ctx = get_current_context()
+
+        # Resolve effective user_id (explicit > context > deprecated)
+        effective_user_id = user_id
+        if effective_user_id is None and ctx:
+            effective_user_id = ctx.user_id
+        if effective_user_id is None:
+            effective_user_id = self._deprecated_user_id
+
+        # Resolve effective conversation_id (explicit > context > deprecated)
+        effective_conv_id = conversation_id
+        if effective_conv_id is None and ctx:
+            effective_conv_id = ctx.conversation_id
+        if effective_conv_id is None:
+            effective_conv_id = self._deprecated_conv_id
 
         function = tool_call.get("function", {})
         name = function.get("name")
@@ -349,7 +471,7 @@ class ToolExecutor:
                     try:
                         json_data = response.json()
                         content = json.dumps(json_data, indent=2)[:10000]
-                    except:
+                    except Exception:
                         content = response.text[:10000]
                 elif "text/html" in content_type or "text/plain" in content_type or "text/xml" in content_type:
                     html = response.text
@@ -837,7 +959,7 @@ class ToolExecutor:
                             api_name="/generate"
                         )
                         return result
-                    except:
+                    except Exception:
                         raise e
 
             # Execute with 120 second timeout for video generation
@@ -922,6 +1044,21 @@ class ToolExecutor:
         if not prompt:
             return {"success": False, "error": "Prompt is required"}
 
+        # SECURITY: Validate and bound numeric parameters
+        width = args.get("width", 1024)
+        height = args.get("height", 1024)
+        try:
+            width = int(width)
+            height = int(height)
+        except (ValueError, TypeError):
+            return {"success": False, "error": "Width and height must be integers"}
+
+        # Enforce reasonable bounds to prevent resource exhaustion
+        MIN_DIMENSION = 256
+        MAX_DIMENSION = 2048
+        width = max(MIN_DIMENSION, min(MAX_DIMENSION, width))
+        height = max(MIN_DIMENSION, min(MAX_DIMENSION, height))
+
         # Inject avatar style from profile for consistent character
         avatar_style = await self._get_avatar_style_prefix(user_id)
         if avatar_style:
@@ -935,8 +1072,8 @@ class ToolExecutor:
                 result = await gen.text_to_image(
                     prompt=prompt,
                     negative_prompt=args.get("negative_prompt", ""),
-                    width=args.get("width", 1024),
-                    height=args.get("height", 1024),
+                    width=width,
+                    height=height,
                     return_base64=True
                 )
 
@@ -966,6 +1103,15 @@ class ToolExecutor:
         if not prompt:
             return {"success": False, "error": "prompt is required"}
 
+        # SECURITY: Validate and bound strength parameter
+        strength = args.get("strength", 0.7)
+        try:
+            strength = float(strength)
+        except (ValueError, TypeError):
+            return {"success": False, "error": "Strength must be a number"}
+        # Clamp to valid range
+        strength = max(0.0, min(1.0, strength))
+
         # Inject avatar style from profile
         avatar_style = await self._get_avatar_style_prefix()
         if avatar_style:
@@ -985,7 +1131,7 @@ class ToolExecutor:
                         image_path=temp_image_path,
                         prompt=prompt,
                         negative_prompt=args.get("negative_prompt", ""),
-                        strength=args.get("strength", 0.7),
+                        strength=strength,
                         return_base64=True
                     )
             finally:
@@ -1072,7 +1218,17 @@ class ToolExecutor:
         if not image_base64:
             return {"success": False, "error": "image_base64 is required"}
 
+        # SECURITY: Validate and bound scale parameter
         scale = args.get("scale", 2.0)
+        try:
+            scale = float(scale)
+        except (ValueError, TypeError):
+            return {"success": False, "error": "Scale must be a number"}
+        # Clamp to reasonable range to prevent resource exhaustion
+        MIN_SCALE = 1.0
+        MAX_SCALE = 4.0
+        scale = max(MIN_SCALE, min(MAX_SCALE, scale))
+
         logger.info(f"Upscaling image with scale factor: {scale}")
 
         try:

@@ -17,7 +17,7 @@ from app.services.user_profile_service import get_user_profile_service
 from app.services.evaluator_service import get_evaluator_service
 
 logger = logging.getLogger(__name__)
-from app.services.tool_executor import tool_executor
+from app.services.tool_executor import tool_executor, create_context
 from app.services.conversation_store import conversation_store
 from app.services.file_processor import file_processor
 from app.tools.definitions import get_tools_for_model
@@ -156,7 +156,8 @@ async def build_context_with_compaction(
     messages: List[Dict],
     conv_id: str,
     settings,
-    event_callback=None
+    event_callback=None,
+    user_id: Optional[int] = None
 ) -> List[Dict]:
     """Build context with intelligent compaction.
 
@@ -165,6 +166,7 @@ async def build_context_with_compaction(
         conv_id: Conversation ID for storing compaction state
         settings: AppSettings instance
         event_callback: Optional async callback for SSE events (for status updates)
+        user_id: User ID for ownership verification during compaction
 
     Returns:
         Message list with compaction applied if needed
@@ -191,14 +193,15 @@ async def build_context_with_compaction(
                 "data": json.dumps({"status": "optimizing", "message": "Optimizing context..."})
             })
 
-        # Perform compaction
+        # Perform compaction (with user verification)
         record = await compaction_service.compact_conversation(
             conv_id=conv_id,
             messages=messages,
             indices_to_compact=indices,
             model=settings.model,
             existing_summary=current_summary,
-            existing_summary_tokens=summary_tokens
+            existing_summary_tokens=summary_tokens,
+            user_id=user_id
         )
 
         if record:
@@ -298,17 +301,17 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
     chat_request = ChatRequest(**body)
     conv_id = request.headers.get("X-Conversation-ID")
 
-    # Set user context for tool executor (needed for knowledge base access)
-    tool_executor.set_current_user(user.id)
-
     # Create new conversation if none specified
     if not conv_id:
         settings = get_settings()
         conv = await conversation_store.create(model=settings.model, user_id=user.id)
         conv_id = conv.id
 
+    # Create request-scoped context for tool execution (thread-safe)
+    tool_ctx = create_context(user_id=user.id, conversation_id=conv_id)
+
     async def event_generator():
-        nonlocal conv_id
+        nonlocal conv_id, tool_ctx
         settings = get_settings()
         conv = conversation_store.get(conv_id, user_id=user.id)
 
@@ -316,6 +319,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         if not conv:
             conv = await conversation_store.create(model=settings.model, user_id=user.id)
             conv_id = conv.id
+            # Update context with new conversation ID
+            tool_ctx.conversation_id = conv_id
 
         # Send conversation ID to client
         yield {
@@ -323,8 +328,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             "data": json.dumps({"id": conv_id})
         }
 
-        # Set current conversation in tool executor for context-aware tools
-        tool_executor.set_current_conversation(conv_id)
+        # Update context with conversation ID (in case it changed)
+        tool_ctx.conversation_id = conv_id
 
         # Check if current model supports vision and tools
         is_vision = await ollama_service.is_vision_model(settings.model)
@@ -342,11 +347,11 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         if chat_request.images and is_vision:
             msg_index = len(conv.messages)
             for img in chat_request.images:
-                tool_executor.register_image(msg_index, img)
+                tool_ctx.register_image(msg_index, img)
                 logger.debug(f"Registered image for tool use, length: {len(img)}")
 
-        # Get history in API format
-        history = conversation_store.get_messages_for_api(conv_id)
+        # Get history in API format (with user verification)
+        history = conversation_store.get_messages_for_api(conv_id, user_id=user.id)
 
         # Process attached files and build enhanced message
         user_message = chat_request.message
@@ -436,7 +441,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                         if mem.get("category") == "personal" and "name" in mem.get("content", "").lower():
                             content = mem.get("content", "")
                             if "name is" in content.lower():
-                                user_name = content.split("name is")[-1].strip().split()[0]
+                                # Extract and validate name
+                                extracted = content.split("name is")[-1].strip().split()[0]
+                                # Validate: names should be simple alphanumeric, no special chars
+                                # that could be used for injection
+                                if extracted and len(extracted) <= 50 and re.match(r'^[\w\-]+$', extracted):
+                                    user_name = extracted
             except Exception as e:
                 logger.warning(f"Memory retrieval failed: {e}")
                 # Continue without memory context
@@ -497,27 +507,31 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         }
         logger.info(f"[Context] Prepared metadata: memories={len(memory_context) if memory_context else 0}, tools={len(context_metadata['tools_available']) if context_metadata['tools_available'] else 0}")
 
+        # Track active streams for cleanup on disconnect
+        active_stream = None
+
         try:
             # Apply context window management with compaction
             async def send_status(event):
                 yield event
 
             messages = await build_context_with_compaction(
-                messages, conv_id, settings
+                messages, conv_id, settings, user_id=user.id
             )
 
             # Track if we're in thinking mode
             is_thinking = False
             logger.debug(f"Starting stream with think={chat_request.think}")
 
-            # Stream from Ollama
-            async for chunk in ollama_service.chat_stream(
+            # Stream from Ollama - track for cleanup
+            active_stream = ollama_service.chat_stream(
                 messages=messages,
                 model=settings.model,
                 tools=tools,
                 options=options,
                 think=chat_request.think
-            ):
+            )
+            async for chunk in active_stream:
                 # Debug: log chunks that have thinking content
                 if chunk.get("message", {}).get("thinking"):
                     logger.debug(f"Received thinking token: {len(chunk['message']['thinking'])} chars")
@@ -645,32 +659,41 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                 followup_content = ""
                 logger.debug(f"Starting follow-up stream with {len(messages_with_tool)} messages")
                 thinking_count = 0
-                async for chunk in ollama_service.chat_stream(
+                # Track follow-up stream for cleanup
+                followup_stream = ollama_service.chat_stream(
                     messages=messages_with_tool,
                     model=settings.model,
                     options=options,
                     think=False
-                ):
-                    msg = chunk.get("message", {})
+                )
+                try:
+                    async for chunk in followup_stream:
+                        msg = chunk.get("message", {})
 
-                    # Track thinking tokens to detect runaway loops
-                    if msg.get("thinking"):
-                        thinking_count += 1
-                        if thinking_count > 2000:  # Allow more thinking for complex queries
-                            logger.warning(f"Thinking limit reached ({thinking_count} tokens), breaking")
+                        # Track thinking tokens to detect runaway loops
+                        if msg.get("thinking"):
+                            thinking_count += 1
+                            if thinking_count > 2000:  # Allow more thinking for complex queries
+                                logger.warning(f"Thinking limit reached ({thinking_count} tokens), breaking")
+                                break
+                            continue  # Skip thinking tokens
+
+                        if msg.get("content"):
+                            content = msg["content"]
+                            followup_content += content
+                            yield {
+                                "event": "token",
+                                "data": json.dumps({"content": content})
+                            }
+                        if chunk.get("done"):
+                            logger.debug(f"Follow-up done, content: {len(followup_content)} chars, thinking tokens: {thinking_count}")
                             break
-                        continue  # Skip thinking tokens
-
-                    if msg.get("content"):
-                        content = msg["content"]
-                        followup_content += content
-                        yield {
-                            "event": "token",
-                            "data": json.dumps({"content": content})
-                        }
-                    if chunk.get("done"):
-                        logger.debug(f"Follow-up done, content: {len(followup_content)} chars, thinking tokens: {thinking_count}")
-                        break
+                finally:
+                    # Ensure follow-up stream is closed
+                    try:
+                        await followup_stream.aclose()
+                    except Exception:
+                        pass
 
                 # Add follow-up to conversation
                 if followup_content:
@@ -743,6 +766,15 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             except (BrokenPipeError, ConnectionError, ConnectionResetError):
                 # Even the error yield failed - client is gone
                 pass
+        finally:
+            # Clean up any active Ollama streams
+            if active_stream is not None:
+                try:
+                    await active_stream.aclose()
+                except Exception:
+                    pass  # Stream may already be closed
+            # Clean up context-scoped image registry
+            tool_ctx.clear_images()
 
     return EventSourceResponse(event_generator())
 
@@ -858,8 +890,8 @@ async def regenerate_response(
     user: UserResponse = Depends(require_auth)
 ):
     """Regenerate an assistant response by removing it and generating a new one"""
-    # Set user context for tool executor
-    tool_executor.set_current_user(user.id)
+    # Create request-scoped context for tool execution (thread-safe)
+    tool_ctx = create_context(user_id=user.id, conversation_id=conv_id)
 
     conv = conversation_store.get(conv_id, user_id=user.id)
     if not conv:
@@ -907,8 +939,8 @@ async def regenerate_response(
         mcp_tools = mcp_manager.get_tools_as_openai_format()
         tools = get_tools_for_model(supports_tools=supports_tools, supports_vision=is_vision, mcp_tools=mcp_tools)
 
-        # Get updated history (without the removed messages)
-        history = conversation_store.get_messages_for_api(conv_id)
+        # Get updated history (without the removed messages, with user verification)
+        history = conversation_store.get_messages_for_api(conv_id, user_id=user.id)
 
         # === Load User Profile ===
         profile_service = get_user_profile_service()
@@ -971,7 +1003,12 @@ async def regenerate_response(
                         if mem.get("category") == "personal" and "name" in mem.get("content", "").lower():
                             content = mem.get("content", "")
                             if "name is" in content.lower():
-                                user_name = content.split("name is")[-1].strip().split()[0]
+                                # Extract and validate name
+                                extracted = content.split("name is")[-1].strip().split()[0]
+                                # Validate: names should be simple alphanumeric, no special chars
+                                # that could be used for injection
+                                if extracted and len(extracted) <= 50 and re.match(r'^[\w\-]+$', extracted):
+                                    user_name = extracted
             except Exception as e:
                 logger.warning(f"Regenerate memory retrieval failed: {e}")
                 # Continue without memory context
@@ -1008,9 +1045,9 @@ async def regenerate_response(
         tool_calls = []
 
         try:
-            # Apply context window management with compaction
+            # Apply context window management with compaction (with user verification)
             messages = await build_context_with_compaction(
-                messages, conv_id, settings
+                messages, conv_id, settings, user_id=user.id
             )
 
             async for chunk in ollama_service.chat_stream(
@@ -1096,6 +1133,9 @@ async def regenerate_response(
                 }
             except (BrokenPipeError, ConnectionError, ConnectionResetError):
                 pass
+        finally:
+            # Clean up context-scoped resources
+            tool_ctx.clear_images()
 
     return EventSourceResponse(event_generator())
 
@@ -1108,7 +1148,7 @@ async def get_chat_history(request: Request, user: UserResponse = Depends(requir
     conv = conversation_store.get(conv_id, user_id=user.id)
     if not conv:
         return {"history": []}
-    return {"history": conversation_store.get_messages_for_api(conv_id)}
+    return {"history": conversation_store.get_messages_for_api(conv_id, user_id=user.id)}
 
 
 @router.delete("/history")
@@ -1120,5 +1160,11 @@ async def clear_chat_history(request: Request, user: UserResponse = Depends(requ
         conv = conversation_store.get(conv_id, user_id=user.id)
         if conv:
             await conversation_store.clear_messages(conv_id)
-    tool_executor.clear_images()
+    # Clear images from context if available, otherwise from executor
+    from app.services.tool_executor import get_current_context
+    ctx = get_current_context()
+    if ctx:
+        ctx.clear_images()
+    else:
+        tool_executor.clear_images()
     return {"status": "cleared"}
