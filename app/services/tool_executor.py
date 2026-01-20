@@ -89,7 +89,7 @@ class ToolExecutor:
         elif name == "browse_website":
             return await self._execute_browse_website(arguments)
         elif name == "search_conversations":
-            return await self._execute_conversation_search(arguments, effective_conv_id)
+            return await self._execute_conversation_search(arguments, effective_conv_id, effective_user_id)
         elif name == "search_knowledge_base":
             return await self._execute_knowledge_search(arguments, effective_user_id)
         elif name == "add_memory":
@@ -577,7 +577,7 @@ class ToolExecutor:
         return '\n'.join(lines)
 
     async def _execute_conversation_search(
-        self, args: Dict[str, Any], conversation_id: Optional[str] = None
+        self, args: Dict[str, Any], conversation_id: Optional[str] = None, user_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """Search through previous conversations for context"""
         query = args.get("query", "")
@@ -593,7 +593,8 @@ class ToolExecutor:
             results = conversation_store.search_conversations(
                 query=query,
                 exclude_conv_id=conversation_id,
-                max_results=10
+                max_results=10,
+                user_id=user_id
             )
 
             if not results:
