@@ -1,17 +1,30 @@
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
+import asyncio
 import json
+import logging
+import re
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 from app.services.ollama import ollama_service
+from app.services.memory_service import get_memory_service
+from app.services.system_prompt_builder import get_prompt_builder
+from app.services import compaction_service
+from app.services.mcp_client import get_mcp_manager
+from app.services.user_profile_service import get_user_profile_service
+from app.services.evaluator_service import get_evaluator_service
+
+logger = logging.getLogger(__name__)
 from app.services.tool_executor import tool_executor
 from app.services.conversation_store import conversation_store
 from app.services.file_processor import file_processor
 from app.tools.definitions import get_tools_for_model
 from app.config import get_settings
 from app.models.schemas import ChatRequest
+from app.middleware.auth import require_auth
+from app.models.auth_schemas import UserResponse
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -71,7 +84,7 @@ def truncate_messages_for_context(messages: List[Dict], max_tokens: int, reserve
 
     # If critical messages alone exceed limit, we need to truncate tool content
     if critical_tokens > available_tokens - kept_tokens:
-        print(f"[CONTEXT] Warning: Tool results too large ({critical_tokens} tokens), truncating content")
+        logger.warning(f"Tool results too large ({critical_tokens} tokens), truncating content")
         # Still add them but they'll be cut by the model
         for i in range(critical_start, len(messages)):
             result.append(messages[i])
@@ -88,8 +101,92 @@ def truncate_messages_for_context(messages: List[Dict], max_tokens: int, reserve
     result.extend(messages[critical_start:])
     kept_tokens += critical_tokens
 
-    print(f"[CONTEXT] Kept {len(result)} messages (est. {kept_tokens} tokens, dropped {critical_start} older messages)")
+    logger.debug(f"Kept {len(result)} messages (est. {kept_tokens} tokens, dropped {critical_start} older messages)")
     return result
+
+
+async def build_context_with_compaction(
+    messages: List[Dict],
+    conv_id: str,
+    settings,
+    event_callback=None
+) -> List[Dict]:
+    """Build context with intelligent compaction.
+
+    Args:
+        messages: Current message list
+        conv_id: Conversation ID for storing compaction state
+        settings: AppSettings instance
+        event_callback: Optional async callback for SSE events (for status updates)
+
+    Returns:
+        Message list with compaction applied if needed
+    """
+    if not settings.compaction_enabled:
+        return truncate_messages_for_context(messages, settings.num_ctx)
+
+    # Get current summary state
+    current_summary = conversation_store.get_summary(conv_id)
+    summary_tokens = conversation_store.get_summary_token_count(conv_id)
+
+    # Check if compaction is needed
+    should_do, to_compact, indices = compaction_service.should_compact(
+        messages, settings, summary_tokens
+    )
+
+    if should_do:
+        logger.info(f"Triggering compaction for conversation {conv_id}")
+
+        # Notify client that we're optimizing (optional)
+        if event_callback:
+            await event_callback({
+                "event": "status",
+                "data": json.dumps({"status": "optimizing", "message": "Optimizing context..."})
+            })
+
+        # Perform compaction
+        record = await compaction_service.compact_conversation(
+            conv_id=conv_id,
+            messages=messages,
+            indices_to_compact=indices,
+            model=settings.model,
+            existing_summary=current_summary,
+            existing_summary_tokens=summary_tokens
+        )
+
+        if record:
+            # Build message list with summary
+            messages = compaction_service.build_compacted_messages(
+                messages,
+                record.summary,
+                indices
+            )
+            logger.debug(f"Compaction complete, new message count: {len(messages)}")
+        else:
+            # Fallback to simple truncation
+            logger.warning("Compaction failed, falling back to truncation")
+            return truncate_messages_for_context(messages, settings.num_ctx)
+
+    elif current_summary:
+        # Not compacting now, but we have an existing summary
+        # Rebuild messages with the summary included
+        conv = conversation_store.get(conv_id)
+        if conv:
+            # Find which messages are compacted
+            compacted_indices = []
+            for i, msg in enumerate(conv.messages):
+                if msg.compacted:
+                    compacted_indices.append(i)
+
+            if compacted_indices:
+                messages = compaction_service.build_compacted_messages(
+                    messages,
+                    current_summary,
+                    compacted_indices
+                )
+
+    # Final safety truncation (should rarely be needed)
+    return truncate_messages_for_context(messages, settings.num_ctx)
 
 
 class EditMessageRequest(BaseModel):
@@ -104,27 +201,73 @@ class RenameConversationRequest(BaseModel):
     title: str
 
 
+async def extract_memory_search_terms(
+    user_message: str,
+    model: str,
+    max_retries: int = 2
+) -> List[str]:
+    """Phase 1: Extract search terms from user message for memory query."""
+    prompt_builder = get_prompt_builder()
+    extraction_prompt = prompt_builder.build_extraction_prompt(user_message)
+
+    # Build simple messages for extraction
+    messages = [
+        {"role": "system", "content": "You are a JSON-only response assistant."},
+        {"role": "user", "content": extraction_prompt}
+    ]
+
+    for attempt in range(max_retries + 1):
+        try:
+            # Use existing chat_complete for non-streaming
+            response = await ollama_service.chat_complete(
+                messages=messages,
+                model=model,
+                options={"temperature": 0.1, "num_ctx": 1024}
+            )
+
+            response_text = response.get("message", {}).get("content", "").strip()
+
+            # Extract JSON from response
+            json_match = re.search(r'\{[^}]+\}', response_text)
+            if json_match:
+                data = json.loads(json_match.group())
+                terms = data.get("terms", [])
+                if isinstance(terms, list):
+                    return [str(t) for t in terms if t]
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"Memory extraction attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries:
+                messages[1]["content"] += '\n\nYour previous response was not valid JSON. Respond ONLY with: {"terms": ["term1"]}'
+                continue
+
+    return []
+
+
 @router.post("")
-async def chat(request: Request):
+async def chat(request: Request, user: UserResponse = Depends(require_auth)):
     """Send a chat message and receive SSE stream response"""
     body = await request.json()
     chat_request = ChatRequest(**body)
     conv_id = request.headers.get("X-Conversation-ID")
 
+    # Set user context for tool executor (needed for knowledge base access)
+    tool_executor.set_current_user(user.id)
+
     # Create new conversation if none specified
     if not conv_id:
         settings = get_settings()
-        conv = conversation_store.create(model=settings.model)
+        conv = await conversation_store.create(model=settings.model, user_id=user.id)
         conv_id = conv.id
 
     async def event_generator():
         nonlocal conv_id
         settings = get_settings()
-        conv = conversation_store.get(conv_id)
+        conv = conversation_store.get(conv_id, user_id=user.id)
 
-        # If conversation not found, create a new one
+        # If conversation not found or not owned by user, create a new one
         if not conv:
-            conv = conversation_store.create(model=settings.model)
+            conv = await conversation_store.create(model=settings.model, user_id=user.id)
             conv_id = conv.id
 
         # Send conversation ID to client
@@ -139,18 +282,21 @@ async def chat(request: Request):
         # Check if current model supports vision and tools
         is_vision = await ollama_service.is_vision_model(settings.model)
         supports_tools = await ollama_service.supports_tools(settings.model)
-        print(f"[CHAT] Model: {settings.model}, is_vision: {is_vision}, supports_tools: {supports_tools}")
-        print(f"[CHAT] Images received: {len(chat_request.images) if chat_request.images else 0}")
+        logger.info(f"Chat request: model={settings.model}, vision={is_vision}, tools={supports_tools}")
+        logger.debug(f"Images received: {len(chat_request.images) if chat_request.images else 0}")
 
         # Get appropriate tools for this model (only if it supports tools)
-        tools = get_tools_for_model(is_vision) if supports_tools else None
+        # Include MCP tools from connected servers
+        mcp_manager = get_mcp_manager()
+        mcp_tools = mcp_manager.get_tools_as_openai_format()
+        tools = get_tools_for_model(supports_tools=supports_tools, supports_vision=is_vision, mcp_tools=mcp_tools)
 
         # Register images for tool use (only if vision model)
         if chat_request.images and is_vision:
             msg_index = len(conv.messages)
             for img in chat_request.images:
                 tool_executor.register_image(msg_index, img)
-                print(f"[CHAT] Registered image for tool use, length: {len(img)}")
+                logger.debug(f"Registered image for tool use, length: {len(img)}")
 
         # Get history in API format
         history = conversation_store.get_messages_for_api(conv_id)
@@ -158,17 +304,16 @@ async def chat(request: Request):
         # Process attached files and build enhanced message
         user_message = chat_request.message
         if chat_request.files:
-            print(f"[CHAT] Processing {len(chat_request.files)} attached files")
+            logger.info(f"Processing {len(chat_request.files)} attached files")
             for f in chat_request.files:
-                print(f"[CHAT] File: {f.name}, type: {f.type}, content_len: {len(f.content) if f.content else 0}, is_base64: {f.is_base64}")
+                logger.debug(f"File: {f.name}, type: {f.type}, content_len: {len(f.content) if f.content else 0}")
             file_context = file_processor.format_files_for_context(
                 [f.model_dump() for f in chat_request.files]
             )
-            print(f"[CHAT] file_context length: {len(file_context) if file_context else 0}")
+            logger.debug(f"File context length: {len(file_context) if file_context else 0}")
             if file_context:
                 user_message = f"{chat_request.message}\n\n{file_context}"
-                print(f"[CHAT] Enhanced user_message length: {len(user_message)}")
-                print(f"[CHAT] First 1000 chars of user_message: {user_message[:1000]}")
+                logger.debug(f"Enhanced user_message length: {len(user_message)}")
 
         # If images were uploaded but model doesn't support vision, inform the model
         if chat_request.images and not is_vision:
@@ -179,20 +324,97 @@ async def chat(request: Request):
 
             image_notice = f"\n\n[SYSTEM NOTE: The user has attached {len(chat_request.images)} image(s), but you are a text-only model without vision capabilities. You cannot see or analyze these images. Please politely inform the user that you cannot view images and suggest they use a vision-capable model (like llava, moondream, or llama3.2-vision) for image analysis. You can help with: {caps_str}.]"
             user_message = user_message + image_notice
-            print(f"[CHAT] Added image notice for non-vision model")
+            logger.debug("Added image notice for non-vision model")
 
-        # Build messages with persona (handle images based on vision capability)
-        messages = ollama_service.build_messages(
+        # === Load User Profile ===
+        profile_service = get_user_profile_service()
+        profile_context = None
+        try:
+            # Base sections always loaded
+            sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
+                                "boundaries", "relationship_metrics", "interaction"]
+
+            # Get session ID from request headers for session-scoped unlock check
+            session_id = request.headers.get("X-Session-ID")
+
+            # Check if session has adult content unlocked
+            # CRITICAL: This checks session-scoped unlock, NOT database status
+            # New sessions start LOCKED by default (child safety requirement)
+            adult_status = await profile_service.get_adult_mode_status(user.id)
+            session_unlock_status = await profile_service.get_session_unlock_status(user.id, session_id) if session_id else {"enabled": False}
+
+            # Both Tier 1 (adult_mode) AND session unlock required for adult sections
+            if adult_status.get("enabled") and session_unlock_status.get("enabled"):
+                sections_to_load.extend(["sexual_romantic", "dark_content", "private_self", "substances_health"])
+                logger.debug("Session unlock enabled - including sensitive sections in prompt")
+
+            profile_sections = await profile_service.read_sections(
+                user.id,
+                sections_to_load,
+                include_disabled=False
+            )
+            if profile_sections:
+                profile_context = profile_sections
+                logger.debug(f"Loaded profile context with {len(profile_sections)} sections")
+        except Exception as e:
+            logger.warning(f"Profile loading failed: {e}")
+
+        # === Two-Phase Memory Retrieval ===
+        memory_service = get_memory_service()
+        prompt_builder = get_prompt_builder()
+        memory_context = []
+        user_name = None
+
+        # Phase 1: Extract search terms (skip for very short messages)
+        if len(chat_request.message) > 10:
+            try:
+                search_terms = await extract_memory_search_terms(
+                    chat_request.message,
+                    settings.model
+                )
+                logger.info(f"Memory search terms: {search_terms}")
+
+                # Query memories with extracted terms
+                if search_terms:
+                    query = " ".join(search_terms)
+                    memory_context = await memory_service.query_memories(
+                        user_id=user.id,
+                        query=query,
+                        top_k=5
+                    )
+                    logger.info(f"Retrieved {len(memory_context)} memories")
+
+                    # Check for user's name in memories
+                    for mem in memory_context:
+                        if mem.get("category") == "personal" and "name" in mem.get("content", "").lower():
+                            content = mem.get("content", "")
+                            if "name is" in content.lower():
+                                user_name = content.split("name is")[-1].strip().split()[0]
+            except Exception as e:
+                logger.warning(f"Memory retrieval failed: {e}")
+                # Continue without memory context
+
+        # Phase 2: Build enhanced system prompt with profile
+        system_prompt = prompt_builder.build_prompt(
+            persona=settings.persona,
+            memory_context=memory_context,
+            profile_context=profile_context,
+            user_name=user_name,
+            has_tools=supports_tools,
+            has_vision=is_vision
+        )
+
+        # Build messages with memory-enhanced system prompt
+        messages = ollama_service.build_messages_with_system(
+            system_prompt=system_prompt,
             user_message=user_message,
             history=history,
-            persona=settings.persona,
             images=chat_request.images if is_vision else None,
-            is_vision_model=is_vision,
-            has_tools=supports_tools
+            is_vision_model=is_vision
         )
 
         # Add user message to conversation
-        user_msg = conversation_store.add_message(
+        user_msg = await conversation_store.add_message(
             conv_id,
             role="user",
             content=chat_request.message,
@@ -221,12 +443,17 @@ async def chat(request: Request):
         tool_calls = []
 
         try:
-            # Apply context window truncation
-            messages = truncate_messages_for_context(messages, settings.num_ctx)
+            # Apply context window management with compaction
+            async def send_status(event):
+                yield event
+
+            messages = await build_context_with_compaction(
+                messages, conv_id, settings
+            )
 
             # Track if we're in thinking mode
             is_thinking = False
-            print(f"[CHAT] Starting stream with think={chat_request.think}")
+            logger.debug(f"Starting stream with think={chat_request.think}")
 
             # Stream from Ollama
             async for chunk in ollama_service.chat_stream(
@@ -238,7 +465,7 @@ async def chat(request: Request):
             ):
                 # Debug: log chunks that have thinking content
                 if chunk.get("message", {}).get("thinking"):
-                    print(f"[CHAT] Received thinking token: {len(chunk['message']['thinking'])} chars")
+                    logger.debug(f"Received thinking token: {len(chunk['message']['thinking'])} chars")
                 if "message" in chunk:
                     msg = chunk["message"]
 
@@ -305,17 +532,8 @@ async def chat(request: Request):
                         })
                     }
 
-                    # If video generation started
-                    if result.get("video_id"):
-                        yield {
-                            "event": "video_started",
-                            "data": json.dumps({
-                                "video_id": result["video_id"]
-                            })
-                        }
-
                 # Add assistant message with tool calls to conversation
-                assistant_msg = conversation_store.add_message(
+                assistant_msg = await conversation_store.add_message(
                     conv_id,
                     role="assistant",
                     content=collected_content,
@@ -353,12 +571,12 @@ async def chat(request: Request):
                     "content": "Based on the tool results above, please answer my question."
                 })
 
-                # Apply context window truncation for follow-up
+                # Apply context window management for follow-up (use simple truncation for tool responses)
                 messages_with_tool = truncate_messages_for_context(messages_with_tool, settings.num_ctx)
 
                 # Get follow-up response (disable thinking mode to prevent infinite loops)
                 followup_content = ""
-                print(f"[DEBUG] Starting follow-up stream with {len(messages_with_tool)} messages")
+                logger.debug(f"Starting follow-up stream with {len(messages_with_tool)} messages")
                 thinking_count = 0
                 async for chunk in ollama_service.chat_stream(
                     messages=messages_with_tool,
@@ -372,7 +590,7 @@ async def chat(request: Request):
                     if msg.get("thinking"):
                         thinking_count += 1
                         if thinking_count > 2000:  # Allow more thinking for complex queries
-                            print(f"[DEBUG] Thinking limit reached ({thinking_count} tokens), breaking")
+                            logger.warning(f"Thinking limit reached ({thinking_count} tokens), breaking")
                             break
                         continue  # Skip thinking tokens
 
@@ -384,12 +602,12 @@ async def chat(request: Request):
                             "data": json.dumps({"content": content})
                         }
                     if chunk.get("done"):
-                        print(f"[DEBUG] Follow-up done, total content: {len(followup_content)} chars, thinking tokens: {thinking_count}")
+                        logger.debug(f"Follow-up done, content: {len(followup_content)} chars, thinking tokens: {thinking_count}")
                         break
 
                 # Add follow-up to conversation
                 if followup_content:
-                    followup_msg = conversation_store.add_message(
+                    followup_msg = await conversation_store.add_message(
                         conv_id,
                         role="assistant",
                         content=followup_content
@@ -405,7 +623,7 @@ async def chat(request: Request):
             else:
                 # No tool calls - add regular assistant message
                 if collected_content:
-                    assistant_msg = conversation_store.add_message(
+                    assistant_msg = await conversation_store.add_message(
                         conv_id,
                         role="assistant",
                         content=collected_content
@@ -419,80 +637,137 @@ async def chat(request: Request):
                             })
                         }
 
+            # === Trigger Evaluation if Needed ===
+            try:
+                evaluator = get_evaluator_service()
+                evaluator.increment_interaction(user.id)
+                if await evaluator.should_evaluate(user.id):
+                    eval_result = await evaluator.evaluate(user.id)
+                    logger.debug(f"Evaluation result: {eval_result.get('session_polarity', 'unknown')}")
+            except Exception as e:
+                logger.warning(f"Evaluation failed: {e}")
+
             yield {
                 "event": "done",
                 "data": json.dumps({"finish_reason": "stop"})
             }
 
+        except (BrokenPipeError, ConnectionError, ConnectionResetError):
+            # Client disconnected - exit gracefully without trying to yield
+            logger.debug("Client disconnected during SSE stream")
+            return
+        except asyncio.CancelledError:
+            # Request was cancelled - exit gracefully
+            logger.debug("SSE stream cancelled")
+            return
         except Exception as e:
-            yield {
-                "event": "error",
-                "data": json.dumps({"message": str(e)})
-            }
+            logger.error(f"Stream error: {e}")
+            try:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"message": str(e)})
+                }
+            except (BrokenPipeError, ConnectionError, ConnectionResetError):
+                # Even the error yield failed - client is gone
+                pass
 
     return EventSourceResponse(event_generator())
 
 
 @router.get("/conversations")
-async def list_conversations():
-    """List all conversations"""
-    return {"conversations": conversation_store.list_all()}
+async def list_conversations(user: UserResponse = Depends(require_auth)):
+    """List conversations for the authenticated user"""
+    return {"conversations": conversation_store.list_for_user(user.id)}
 
 
 @router.post("/conversations")
-async def create_conversation():
-    """Create a new conversation"""
+async def create_conversation(user: UserResponse = Depends(require_auth)):
+    """Create a new conversation for the authenticated user"""
     settings = get_settings()
-    conv = conversation_store.create(model=settings.model)
+    conv = await conversation_store.create(model=settings.model, user_id=user.id)
     return {"id": conv.id, "title": conv.title}
 
 
 @router.get("/conversations/{conv_id}")
-async def get_conversation(conv_id: str):
-    """Get a specific conversation with all messages"""
-    conv = conversation_store.get(conv_id)
+async def get_conversation(conv_id: str, user: UserResponse = Depends(require_auth)):
+    """Get a specific conversation with all messages (owned by user)"""
+    conv = conversation_store.get(conv_id, user_id=user.id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conv.to_dict()
 
 
 @router.delete("/conversations/{conv_id}")
-async def delete_conversation(conv_id: str):
-    """Delete a conversation"""
-    if conversation_store.delete(conv_id):
+async def delete_conversation(conv_id: str, user: UserResponse = Depends(require_auth)):
+    """Delete a conversation (must be owned by user)"""
+    # Verify ownership first
+    conv = conversation_store.get(conv_id, user_id=user.id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if await conversation_store.delete(conv_id):
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Conversation not found")
 
 
 @router.patch("/conversations/{conv_id}")
-async def rename_conversation(conv_id: str, request: RenameConversationRequest):
-    """Rename a conversation"""
-    if conversation_store.rename(conv_id, request.title):
+async def rename_conversation(
+    conv_id: str,
+    request: RenameConversationRequest,
+    user: UserResponse = Depends(require_auth)
+):
+    """Rename a conversation (must be owned by user)"""
+    # Verify ownership first
+    conv = conversation_store.get(conv_id, user_id=user.id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if await conversation_store.rename(conv_id, request.title):
         return {"status": "renamed", "title": request.title}
     raise HTTPException(status_code=404, detail="Conversation not found")
 
 
 @router.delete("/conversations/{conv_id}/messages")
-async def clear_conversation(conv_id: str):
-    """Clear all messages from a conversation"""
-    if conversation_store.clear_messages(conv_id):
+async def clear_conversation(conv_id: str, user: UserResponse = Depends(require_auth)):
+    """Clear all messages from a conversation (must be owned by user)"""
+    # Verify ownership first
+    conv = conversation_store.get(conv_id, user_id=user.id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if await conversation_store.clear_messages(conv_id):
         return {"status": "cleared"}
     raise HTTPException(status_code=404, detail="Conversation not found")
 
 
 @router.patch("/conversations/{conv_id}/messages/{msg_id}")
-async def edit_message(conv_id: str, msg_id: str, request: EditMessageRequest):
+async def edit_message(
+    conv_id: str,
+    msg_id: str,
+    request: EditMessageRequest,
+    user: UserResponse = Depends(require_auth)
+):
     """Edit a message (in-place, for simple edits)"""
-    msg = conversation_store.update_message(conv_id, msg_id, request.content)
+    # Verify ownership first
+    conv = conversation_store.get(conv_id, user_id=user.id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    msg = await conversation_store.update_message(conv_id, msg_id, request.content)
     if msg:
         return {"status": "updated", "id": msg.id}
     raise HTTPException(status_code=404, detail="Message not found")
 
 
 @router.post("/conversations/{conv_id}/messages/{msg_id}/fork")
-async def fork_conversation(conv_id: str, msg_id: str, request: ForkMessageRequest):
+async def fork_conversation(
+    conv_id: str,
+    msg_id: str,
+    request: ForkMessageRequest,
+    user: UserResponse = Depends(require_auth)
+):
     """Fork conversation at a message with new content"""
-    new_conv = conversation_store.fork_at_message(conv_id, msg_id, request.content)
+    # Verify ownership first
+    conv = conversation_store.get(conv_id, user_id=user.id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    new_conv = await conversation_store.fork_at_message(conv_id, msg_id, request.content)
     if new_conv:
         return {
             "status": "forked",
@@ -503,9 +778,17 @@ async def fork_conversation(conv_id: str, msg_id: str, request: ForkMessageReque
 
 
 @router.post("/conversations/{conv_id}/regenerate/{msg_id}")
-async def regenerate_response(conv_id: str, msg_id: str):
+async def regenerate_response(
+    conv_id: str,
+    msg_id: str,
+    request: Request,
+    user: UserResponse = Depends(require_auth)
+):
     """Regenerate an assistant response by removing it and generating a new one"""
-    conv = conversation_store.get(conv_id)
+    # Set user context for tool executor
+    tool_executor.set_current_user(user.id)
+
+    conv = conversation_store.get(conv_id, user_id=user.id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -537,9 +820,9 @@ async def regenerate_response(conv_id: str, msg_id: str):
     user_images = conv.messages[user_msg_index].images
 
     # Remove messages from the assistant message onward
-    with conversation_store._lock:
+    async with conversation_store._lock:
         conv.messages = conv.messages[:msg_index]
-        conversation_store._save(conv)
+        await conversation_store._save(conv)
 
     async def event_generator():
         settings = get_settings()
@@ -548,20 +831,97 @@ async def regenerate_response(conv_id: str, msg_id: str):
         is_vision = await ollama_service.is_vision_model(settings.model)
         supports_tools = await ollama_service.supports_tools(settings.model)
 
-        # Get appropriate tools
-        tools = get_tools_for_model(is_vision) if supports_tools else None
+        # Get appropriate tools (including MCP tools from connected servers)
+        mcp_manager = get_mcp_manager()
+        mcp_tools = mcp_manager.get_tools_as_openai_format()
+        tools = get_tools_for_model(supports_tools=supports_tools, supports_vision=is_vision, mcp_tools=mcp_tools)
 
         # Get updated history (without the removed messages)
         history = conversation_store.get_messages_for_api(conv_id)
 
-        # Build messages
-        messages = ollama_service.build_messages(
+        # === Load User Profile ===
+        profile_service = get_user_profile_service()
+        profile_context = None
+        try:
+            # Base sections always loaded
+            sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
+                                "boundaries", "relationship_metrics", "interaction"]
+
+            # Get session ID from request headers for session-scoped unlock check
+            session_id = request.headers.get("X-Session-ID")
+
+            # Check if session has adult content unlocked
+            # CRITICAL: This checks session-scoped unlock, NOT database status
+            adult_status = await profile_service.get_adult_mode_status(user.id)
+            session_unlock_status = await profile_service.get_session_unlock_status(user.id, session_id) if session_id else {"enabled": False}
+
+            # Both Tier 1 (adult_mode) AND session unlock required for adult sections
+            if adult_status.get("enabled") and session_unlock_status.get("enabled"):
+                sections_to_load.extend(["sexual_romantic", "dark_content", "private_self", "substances_health"])
+                logger.debug("Regenerate: Session unlock enabled - including sensitive sections")
+
+            profile_sections = await profile_service.read_sections(
+                user.id,
+                sections_to_load,
+                include_disabled=False
+            )
+            if profile_sections:
+                profile_context = profile_sections
+        except Exception as e:
+            logger.warning(f"Regenerate profile loading failed: {e}")
+
+        # === Two-Phase Memory Retrieval ===
+        memory_service = get_memory_service()
+        prompt_builder = get_prompt_builder()
+        memory_context = []
+        user_name = None
+
+        # Phase 1: Extract search terms (skip for very short messages)
+        if len(user_message) > 10:
+            try:
+                search_terms = await extract_memory_search_terms(
+                    user_message,
+                    settings.model
+                )
+                logger.info(f"Regenerate memory search terms: {search_terms}")
+
+                # Query memories with extracted terms
+                if search_terms:
+                    query = " ".join(search_terms)
+                    memory_context = await memory_service.query_memories(
+                        user_id=user.id,
+                        query=query,
+                        top_k=5
+                    )
+                    logger.info(f"Regenerate retrieved {len(memory_context)} memories")
+
+                    # Check for user's name in memories
+                    for mem in memory_context:
+                        if mem.get("category") == "personal" and "name" in mem.get("content", "").lower():
+                            content = mem.get("content", "")
+                            if "name is" in content.lower():
+                                user_name = content.split("name is")[-1].strip().split()[0]
+            except Exception as e:
+                logger.warning(f"Regenerate memory retrieval failed: {e}")
+                # Continue without memory context
+
+        # Phase 2: Build enhanced system prompt with profile
+        system_prompt = prompt_builder.build_prompt(
+            persona=settings.persona,
+            memory_context=memory_context,
+            profile_context=profile_context,
+            user_name=user_name,
+            has_tools=supports_tools,
+            has_vision=is_vision
+        )
+
+        # Build messages with memory-enhanced system prompt
+        messages = ollama_service.build_messages_with_system(
+            system_prompt=system_prompt,
             user_message=user_message,
             history=history[:-1] if history else [],  # Exclude the last user message as we'll add it fresh
-            persona=settings.persona,
             images=user_images if is_vision else None,
-            is_vision_model=is_vision,
-            has_tools=supports_tools
+            is_vision_model=is_vision
         )
 
         # Prepare options
@@ -577,7 +937,10 @@ async def regenerate_response(conv_id: str, msg_id: str):
         tool_calls = []
 
         try:
-            messages = truncate_messages_for_context(messages, settings.num_ctx)
+            # Apply context window management with compaction
+            messages = await build_context_with_compaction(
+                messages, conv_id, settings
+            )
 
             async for chunk in ollama_service.chat_stream(
                 messages=messages,
@@ -620,7 +983,7 @@ async def regenerate_response(conv_id: str, msg_id: str):
 
             # Save the new assistant message
             if collected_content:
-                assistant_msg = conversation_store.add_message(
+                assistant_msg = await conversation_store.add_message(
                     conv_id,
                     role="assistant",
                     content=collected_content,
@@ -640,31 +1003,44 @@ async def regenerate_response(conv_id: str, msg_id: str):
                 "data": json.dumps({"finish_reason": "stop"})
             }
 
+        except (BrokenPipeError, ConnectionError, ConnectionResetError):
+            logger.debug("Client disconnected during regenerate stream")
+            return
+        except asyncio.CancelledError:
+            logger.debug("Regenerate stream cancelled")
+            return
         except Exception as e:
-            yield {
-                "event": "error",
-                "data": json.dumps({"message": str(e)})
-            }
+            logger.error(f"Regenerate stream error: {e}")
+            try:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"message": str(e)})
+                }
+            except (BrokenPipeError, ConnectionError, ConnectionResetError):
+                pass
 
     return EventSourceResponse(event_generator())
 
 
 # Legacy endpoints for backward compatibility
 @router.get("/history")
-async def get_chat_history(request: Request):
+async def get_chat_history(request: Request, user: UserResponse = Depends(require_auth)):
     """Get chat history for current session (legacy)"""
     conv_id = request.headers.get("X-Conversation-ID", "default")
-    conv = conversation_store.get(conv_id)
+    conv = conversation_store.get(conv_id, user_id=user.id)
     if not conv:
         return {"history": []}
     return {"history": conversation_store.get_messages_for_api(conv_id)}
 
 
 @router.delete("/history")
-async def clear_chat_history(request: Request):
+async def clear_chat_history(request: Request, user: UserResponse = Depends(require_auth)):
     """Clear chat history for current session (legacy)"""
     conv_id = request.headers.get("X-Conversation-ID")
     if conv_id:
-        conversation_store.clear_messages(conv_id)
+        # Verify ownership before clearing
+        conv = conversation_store.get(conv_id, user_id=user.id)
+        if conv:
+            await conversation_store.clear_messages(conv_id)
     tool_executor.clear_images()
     return {"status": "cleared"}

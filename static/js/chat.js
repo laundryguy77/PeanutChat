@@ -10,6 +10,7 @@ export class ChatManager {
         this.currentStreamContent = '';
         this.currentThinkingContent = '';
         this.thinkingContainer = null;
+        this.currentToolCalls = [];
         this.initializeMarkdown();
     }
 
@@ -89,7 +90,7 @@ export class ChatManager {
 
             return html;
         } catch (e) {
-            console.error('Markdown parse error:', e);
+            // Fallback to raw content if markdown parsing fails
             return content;
         }
     }
@@ -190,15 +191,12 @@ export class ChatManager {
         const msgId = messageId;
         const chatManager = this;
 
-        console.log('Creating action buttons for message:', { role, msgId, contentPreview: messageContent?.substring(0, 30) });
-
         if (isUser) {
             const copyBtn = document.createElement('button');
             copyBtn.className = 'p-1.5 text-gray-500 hover:text-white hover:bg-white/10 rounded-lg transition-all';
             copyBtn.title = 'Copy';
             copyBtn.innerHTML = '<span class="material-symbols-outlined text-sm">content_copy</span>';
             copyBtn.onclick = (e) => {
-                console.log('User copy button clicked!');
                 e.preventDefault();
                 e.stopPropagation();
                 chatManager.copyToClipboard(messageContent, copyBtn);
@@ -223,7 +221,6 @@ export class ChatManager {
             copyBtn.title = 'Copy';
             copyBtn.innerHTML = '<span class="material-symbols-outlined text-sm">content_copy</span>';
             copyBtn.onclick = (e) => {
-                console.log('Assistant copy button clicked!');
                 e.preventDefault();
                 e.stopPropagation();
                 chatManager.copyToClipboard(messageContent, copyBtn);
@@ -236,7 +233,6 @@ export class ChatManager {
                 regenBtn.title = 'Regenerate';
                 regenBtn.innerHTML = '<span class="material-symbols-outlined text-sm">refresh</span>';
                 regenBtn.onclick = (e) => {
-                    console.log('Regenerate button clicked!', msgId);
                     e.preventDefault();
                     e.stopPropagation();
                     chatManager.regenerateResponse(msgId);
@@ -315,6 +311,7 @@ export class ChatManager {
         this.currentStreamContent = '';
         this.currentThinkingContent = '';
         this.thinkingContainer = null;
+        this.currentToolCalls = [];
 
         const message = document.createElement('div');
         message.className = 'flex gap-4 md:gap-6 animate-fadeIn group';
@@ -386,13 +383,16 @@ export class ChatManager {
 
         if (!this.thinkingContainer) {
             this.thinkingContainer = document.createElement('div');
-            this.thinkingContainer.className = 'mb-4 p-4 rounded-xl bg-primary/10 border border-primary/20';
+            this.thinkingContainer.className = 'mb-4';
             this.thinkingContainer.innerHTML = `
-                <div class="flex items-center gap-2 mb-2 text-primary text-sm font-medium">
-                    <span class="material-symbols-outlined text-lg animate-spin">psychology</span>
-                    <span>Thinking...</span>
-                </div>
-                <div class="thinking-content text-gray-400 text-sm max-h-48 overflow-y-auto whitespace-pre-wrap"></div>
+                <details open class="p-4 rounded-xl bg-primary/10 border border-primary/20 group">
+                    <summary class="flex items-center gap-2 cursor-pointer text-primary text-sm font-medium list-none">
+                        <span class="material-symbols-outlined text-lg animate-spin">psychology</span>
+                        <span>Thinking...</span>
+                        <span class="material-symbols-outlined text-gray-500 group-open:rotate-180 transition-transform ml-auto">expand_more</span>
+                    </summary>
+                    <div class="thinking-content mt-2 text-gray-400 text-sm max-h-48 overflow-y-auto whitespace-pre-wrap"></div>
+                </details>
             `;
             this.currentAssistantMessage.contentEl.appendChild(this.thinkingContainer);
         }
@@ -405,16 +405,23 @@ export class ChatManager {
     finishThinking() {
         if (!this.thinkingContainer) return;
 
-        this.thinkingContainer.innerHTML = `
-            <details class="group">
-                <summary class="flex items-center gap-2 cursor-pointer text-primary text-sm font-medium list-none">
-                    <span class="material-symbols-outlined text-lg">psychology</span>
-                    <span>Thought process</span>
-                    <span class="material-symbols-outlined text-gray-500 group-open:rotate-180 transition-transform">expand_more</span>
-                </summary>
-                <div class="mt-2 text-gray-400 text-sm max-h-48 overflow-y-auto whitespace-pre-wrap">${this.currentThinkingContent}</div>
-            </details>
-        `;
+        const details = this.thinkingContainer.querySelector('details');
+        if (!details) return;
+
+        const summary = details.querySelector('summary');
+        if (summary) {
+            // Update icon to stop spinning and change text
+            summary.innerHTML = `
+                <span class="material-symbols-outlined text-lg">psychology</span>
+                <span>Thought process</span>
+                <span class="material-symbols-outlined text-gray-500 group-open:rotate-180 transition-transform ml-auto">expand_more</span>
+            `;
+        }
+
+        // Collapse by default after thinking is done
+        details.removeAttribute('open');
+
+        this.currentThinkingContent = '';
     }
 
     addToolIndicator(toolName, status = 'processing') {
@@ -451,35 +458,76 @@ export class ChatManager {
         }
     }
 
-    addGeneratedImage(imageUrl) {
-        if (!this.currentAssistantMessage) return;
+    renderToolLog() {
+        if (!this.currentAssistantMessage || this.currentToolCalls.length === 0) return;
 
-        const container = document.createElement('div');
-        container.className = 'my-4 rounded-xl overflow-hidden border border-gray-700';
+        const toolLog = document.createElement('details');
+        toolLog.className = 'tool-log mt-3 border-t border-gray-700 pt-3';
 
-        const img = document.createElement('img');
-        img.src = imageUrl;
-        img.alt = 'Generated image';
-        img.className = 'w-full cursor-pointer hover:opacity-90 transition-opacity';
-        img.addEventListener('click', () => window.open(imageUrl, '_blank'));
+        const summary = document.createElement('summary');
+        summary.className = 'text-xs text-gray-500 cursor-pointer hover:text-gray-400 transition-colors';
+        summary.textContent = `Tool activity (${this.currentToolCalls.length} call${this.currentToolCalls.length > 1 ? 's' : ''})`;
+        toolLog.appendChild(summary);
 
-        const downloadBar = document.createElement('div');
-        downloadBar.className = 'flex items-center justify-between p-3 bg-surface-dark border-t border-gray-700';
-        downloadBar.innerHTML = `
-            <span class="text-sm text-gray-400">Generated Image</span>
-            <a href="${imageUrl}" download class="text-primary hover:text-white text-sm font-medium transition-colors flex items-center gap-1">
-                <span class="material-symbols-outlined text-sm">download</span> Download
-            </a>
-        `;
+        const content = document.createElement('div');
+        content.className = 'mt-2 space-y-2 text-xs';
 
-        container.appendChild(img);
-        container.appendChild(downloadBar);
-        this.currentAssistantMessage.contentEl.appendChild(container);
-        this.scrollToBottom();
+        this.currentToolCalls.forEach(call => {
+            const entry = document.createElement('div');
+            entry.className = 'tool-entry p-2 bg-surface-dark rounded';
+
+            const timeStr = call.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const statusIcon = call.status === 'complete' ? 'check_circle' : call.status === 'error' ? 'error' : 'pending';
+            const statusColor = call.status === 'complete' ? 'text-green-500' : call.status === 'error' ? 'text-red-500' : 'text-yellow-500';
+
+            // Truncate and format arguments for display
+            let argsDisplay = '';
+            try {
+                const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
+                const argsStr = Object.entries(args).map(([k, v]) => {
+                    const val = typeof v === 'string' ? v : JSON.stringify(v);
+                    return `${k}: "${val.length > 50 ? val.substring(0, 50) + '...' : val}"`;
+                }).join(', ');
+                argsDisplay = argsStr.length > 100 ? argsStr.substring(0, 100) + '...' : argsStr;
+            } catch (e) {
+                argsDisplay = String(call.arguments).substring(0, 100);
+            }
+
+            entry.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <span class="text-primary font-medium">${call.name}</span>
+                    <span class="text-gray-500">${timeStr}</span>
+                </div>
+                <div class="text-gray-400 truncate mt-1">${argsDisplay}</div>
+                <div class="flex items-center gap-1 mt-1 ${statusColor}">
+                    <span class="material-symbols-outlined text-sm">${statusIcon}</span>
+                    <span>${call.statusMessage || call.status}</span>
+                </div>
+            `;
+
+            // Add expandable raw result if available
+            if (call.result) {
+                const resultDetails = document.createElement('details');
+                resultDetails.className = 'mt-1';
+                resultDetails.innerHTML = `
+                    <summary class="text-gray-500 cursor-pointer hover:text-gray-400">Show raw result</summary>
+                    <pre class="mt-1 p-2 bg-black/30 rounded text-gray-400 overflow-x-auto max-h-32 text-[10px]">${JSON.stringify(call.result, null, 2)}</pre>
+                `;
+                entry.appendChild(resultDetails);
+            }
+
+            content.appendChild(entry);
+        });
+
+        toolLog.appendChild(content);
+        this.currentAssistantMessage.contentEl.appendChild(toolLog);
     }
 
     addAssistantActions(messageId) {
         if (!this.currentAssistantMessage) return;
+
+        // Render tool log before actions
+        this.renderToolLog();
 
         const actions = document.createElement('div');
         actions.className = 'flex gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity';
@@ -519,9 +567,7 @@ export class ChatManager {
     }
 
     copyToClipboard(text, button) {
-        console.log('copyToClipboard called with:', { text: text?.substring(0, 50), button });
         if (!text) {
-            console.error('Copy failed: No text to copy');
             return;
         }
         navigator.clipboard.writeText(text).then(() => {
@@ -537,9 +583,7 @@ export class ChatManager {
                     }, 1500);
                 }
             }
-            console.log('Copied to clipboard:', text.substring(0, 50) + '...');
-        }).catch(err => {
-            console.error('Copy failed:', err);
+        }).catch(() => {
             // Fallback for older browsers or HTTP contexts
             const textarea = document.createElement('textarea');
             textarea.value = text;
@@ -549,31 +593,29 @@ export class ChatManager {
             textarea.select();
             try {
                 document.execCommand('copy');
-                console.log('Copied via fallback');
             } catch (e) {
-                console.error('Fallback copy failed:', e);
+                // Silent fail - clipboard operations may not be available
             }
             document.body.removeChild(textarea);
         });
     }
 
     async regenerateResponse(messageId) {
-        console.log('regenerateResponse called with messageId:', messageId);
         if (this.isStreaming) {
-            console.log('Blocked: already streaming');
             return;
         }
 
         const convId = this.app.currentConversationId;
-        console.log('Conversation ID:', convId);
         if (!convId) {
-            console.log('Blocked: no conversation ID');
             return;
         }
 
         try {
-            console.log('Fetching regenerate endpoint...');
-            const response = await fetch(`/api/chat/conversations/${convId}/regenerate/${messageId}`, { method: 'POST' });
+            const response = await fetch(`/api/chat/conversations/${convId}/regenerate/${messageId}`, {
+                method: 'POST',
+                headers: this.app.getSessionHeaders(),  // Include session ID for adult content gating
+                credentials: 'include'
+            });
             if (!response.ok) throw new Error('Failed to regenerate');
 
             this.startAssistantMessage();
@@ -583,7 +625,7 @@ export class ChatManager {
             await this.handleSSEStream(response);
             await this.app.loadConversation(convId);
         } catch (error) {
-            console.error('Regenerate error:', error);
+            // Silent fail - UI already shows error state
         } finally {
             this.isStreaming = false;
             this.currentAssistantMessage = null;
@@ -622,6 +664,7 @@ export class ChatManager {
                 const response = await fetch(`/api/chat/conversations/${convId}/messages/${this.editingMessageId}/fork`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify({ content: newContent })
                 });
                 const data = await response.json();
@@ -633,12 +676,13 @@ export class ChatManager {
                 await fetch(`/api/chat/conversations/${convId}/messages/${this.editingMessageId}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
                     body: JSON.stringify({ content: newContent })
                 });
                 await this.app.loadConversation(convId);
             }
         } catch (error) {
-            console.error('Failed to edit message:', error);
+            // Silent fail - edit operation failed
         }
 
         modal.classList.add('hidden');
@@ -648,15 +692,25 @@ export class ChatManager {
     async sendMessage(text, images = [], imageDataUrls = [], think = false, files = []) {
         if (this.isStreaming) return;
 
+        // Check for slash commands before sending
+        if (text.startsWith('/')) {
+            const handled = await this.handleCommand(text);
+            if (handled) return;
+        }
+
         this.addMessage('user', text, imageDataUrls, null, files);
         this.startAssistantMessage();
         this.isStreaming = true;
+        this.totalStreamTokens = 0;
 
         const sendBtn = document.getElementById('send-btn');
         sendBtn.disabled = true;
 
         try {
-            const headers = { 'Content-Type': 'application/json' };
+            const headers = {
+                'Content-Type': 'application/json',
+                ...this.app.getSessionHeaders()  // Include session ID for adult content gating
+            };
             if (this.app.currentConversationId) {
                 headers['X-Conversation-ID'] = this.app.currentConversationId;
             }
@@ -664,6 +718,7 @@ export class ChatManager {
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers,
+                credentials: 'include',
                 body: JSON.stringify({
                     message: text,
                     images: images.length > 0 ? images : undefined,
@@ -675,7 +730,6 @@ export class ChatManager {
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             await this.handleSSEStream(response);
         } catch (error) {
-            console.error('Chat error:', error);
             this.appendToAssistantMessage(`Error: ${error.message}`);
         } finally {
             this.isStreaming = false;
@@ -707,7 +761,7 @@ export class ChatManager {
                         const data = JSON.parse(dataStr);
                         toolIndicator = await this.handleSSEEvent(data, toolIndicator);
                     } catch (e) {
-                        console.error('Failed to parse SSE data:', dataStr, e);
+                        // Silent fail - malformed SSE data
                     }
                 }
             }
@@ -733,11 +787,24 @@ export class ChatManager {
         // Content tokens
         if (data.content !== undefined) {
             this.appendToAssistantMessage(data.content);
+
+            // Update context usage estimate
+            this.totalStreamTokens = (this.totalStreamTokens || 0) + Math.ceil(data.content.length / 4);
+            const maxTokens = this.app.currentModelContextWindow || 4096;
+            this.app.updateContextUsage(this.totalStreamTokens, maxTokens);
         }
 
         // Tool call
         if (data.name && data.arguments !== undefined) {
             toolIndicator = this.addToolIndicator(data.name, 'processing');
+            // Track tool call for log
+            this.currentToolCalls.push({
+                name: data.name,
+                arguments: data.arguments,
+                timestamp: new Date(),
+                status: 'processing',
+                result: null
+            });
         }
 
         // Tool result
@@ -747,13 +814,48 @@ export class ChatManager {
 
             if (data.name === 'web_search') {
                 message = data.result.success ? `Found ${data.result.num_results} results` : data.result.error;
+            } else if (data.name === 'search_conversations') {
+                message = data.result.success ? `Found ${data.result.num_results} results` : data.result.error;
+            } else if (data.name === 'set_conversation_title') {
+                if (data.result.success) {
+                    message = `Title: "${data.result.title}"`;
+                    // Update the UI with the new title
+                    document.getElementById('current-chat-title').textContent = data.result.title;
+                    // Refresh the conversation list to show the new title
+                    this.app.loadConversations();
+                } else {
+                    message = data.result.error || 'Failed to set title';
+                }
             } else if (data.name === 'generate_image') {
-                message = data.result.success ? 'Image generated' : data.result.error;
-                if (data.result.success && data.result.image_url) {
-                    this.addGeneratedImage(data.result.image_url);
+                if (data.result.success && data.result.base64) {
+                    message = 'Image generated';
+                    // Display the image inline after the tool indicator
+                    this.displayGeneratedImage(data.result.base64, data.result.mime_type || 'image/jpeg');
+                } else {
+                    message = data.result.error || 'Image generation failed';
+                }
+            } else if (data.name === 'text_to_video' || data.name === 'image_to_video') {
+                if (data.result.success && data.result.base64) {
+                    message = 'Video generated';
+                    // Display the video inline after the tool indicator
+                    this.displayGeneratedVideo(data.result.base64, data.result.mime_type || 'video/mp4');
+                } else if (data.result.success && data.result.video_url) {
+                    message = 'Video generated';
+                    // Display video from URL
+                    this.displayGeneratedVideoUrl(data.result.video_url);
+                } else {
+                    message = data.result.error || 'Video generation failed';
                 }
             }
             this.updateToolIndicator(toolIndicator, status, message);
+
+            // Update tool call in log
+            const lastCall = this.currentToolCalls[this.currentToolCalls.length - 1];
+            if (lastCall) {
+                lastCall.status = status;
+                lastCall.statusMessage = message;
+                lastCall.result = data.result;
+            }
         }
 
         // Message ID for actions
@@ -766,7 +868,8 @@ export class ChatManager {
 
         // Done
         if (data.finish_reason !== undefined) {
-            console.log('Stream complete:', data.finish_reason);
+            // Stream completed - refresh VRAM gauge
+            this.app.updateUsageGauges();
         }
 
         // Error
@@ -779,5 +882,563 @@ export class ChatManager {
 
     async clearHistory() {
         await this.app.createNewConversation();
+    }
+
+    // Command handling methods
+    async handleCommand(text) {
+        const parts = text.trim().split(/\s+/);
+        const command = parts[0].toLowerCase();
+        const args = parts.slice(1);
+
+        // Handle /full_unlock command with enable/disable actions
+        if (command === '/full_unlock') {
+            const action = args[0]?.toLowerCase() || 'enable';
+
+            if (action === 'enable' || action === 'enabled') {
+                await this.executeFullUnlock('enable');
+                return true;
+            } else if (action === 'disable' || action === 'disabled') {
+                await this.executeFullUnlock('disable');
+                return true;
+            } else {
+                // Invalid action, show help
+                this.addSystemMessage(
+                    'Usage: /full_unlock enable - Enable adult mode for this session\n' +
+                    '       /full_unlock disable - Disable adult mode for this session',
+                    'info'
+                );
+                return true;
+            }
+        }
+
+        // Command not recognized, let it pass through as a normal message
+        return false;
+    }
+
+    addSystemMessage(content, type = 'info') {
+        const welcome = this.messageList.querySelector('.welcome-message');
+        if (welcome) welcome.remove();
+
+        const message = document.createElement('div');
+        message.className = 'flex gap-4 md:gap-6 animate-fadeIn justify-center';
+
+        const iconMap = {
+            'info': 'info',
+            'success': 'check_circle',
+            'warning': 'warning',
+            'error': 'error',
+            'loading': 'progress_activity'
+        };
+        const colorMap = {
+            'info': 'text-blue-400 bg-blue-500/10 border-blue-500/20',
+            'success': 'text-green-400 bg-green-500/10 border-green-500/20',
+            'warning': 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20',
+            'error': 'text-red-400 bg-red-500/10 border-red-500/20',
+            'loading': 'text-primary bg-primary/10 border-primary/20'
+        };
+
+        const icon = iconMap[type] || 'info';
+        const colors = colorMap[type] || colorMap['info'];
+        const spinClass = type === 'loading' ? 'animate-spin' : '';
+
+        message.innerHTML = `
+            <div class="flex items-center gap-3 px-4 py-3 rounded-xl border ${colors} max-w-lg">
+                <span class="material-symbols-outlined ${spinClass}">${icon}</span>
+                <span class="text-sm">${content}</span>
+            </div>
+        `;
+
+        this.messageList.appendChild(message);
+        this.scrollToBottom();
+        return message;
+    }
+
+    async executeFullUnlock(action = 'enable') {
+        // Show loading message
+        const loadingMsg = this.addSystemMessage(
+            action === 'enable'
+                ? 'Hold on while I prepare your personalized experience...'
+                : 'Locking adult content...',
+            'loading'
+        );
+
+        try {
+            // Call backend with action and session ID
+            const response = await fetch('/api/commands/full_unlock', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...this.app.getSessionHeaders()  // Include session ID (required)
+                },
+                credentials: 'include',
+                body: JSON.stringify({ action })
+            });
+
+            if (!response.ok) {
+                // Handle 403 specifically - user needs to unlock uncensored mode first
+                if (response.status === 403) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || 'Please unlock Uncensored Mode first in Settings > Profile (passcode required).');
+                }
+                // Handle 400 for missing session ID
+                if (response.status === 400) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || 'Session error. Please refresh the page.');
+                }
+                throw new Error('Failed to ' + action + ' adult mode');
+            }
+
+            const data = await response.json();
+
+            // Remove loading message
+            loadingMsg.remove();
+
+            if (action === 'disable') {
+                this.addSystemMessage('Adult mode has been disabled for this session.', 'info');
+                return;
+            }
+
+            // Show success message
+            this.addSystemMessage('Adult mode enabled! All sensitive content sections are now available.', 'success');
+
+            // Show the full unlock onboarding modal
+            this.showFullUnlockOnboarding(data);
+
+        } catch (error) {
+            loadingMsg.remove();
+            // Show helpful error message
+            const isPasscodeError = error.message.includes('Uncensored') || error.message.includes('passcode');
+            this.addSystemMessage(
+                isPasscodeError
+                    ? `${error.message}`
+                    : `Error: ${error.message}`,
+                isPasscodeError ? 'warning' : 'error'
+            );
+        }
+    }
+
+    showFullUnlockOnboarding(data) {
+        // Create and show the onboarding modal
+        const modal = document.getElementById('full-unlock-modal');
+        if (!modal) {
+            console.error('Full unlock modal not found');
+            return;
+        }
+
+        // Store onboarding data for use in the flow
+        this.fullUnlockData = data;
+        this.currentOnboardingStep = 0;
+
+        // Show the modal
+        modal.classList.remove('hidden');
+
+        // Update the intro text with the personality tone
+        const introText = modal.querySelector('#full-unlock-intro');
+        if (introText) {
+            introText.textContent = `*nervously* Oh! You... you really want to do this? I'm... I'm actually really excited! *blushes* Let me ask you a few things so I can be exactly what you need...`;
+        }
+
+        // Start with first question set
+        this.showOnboardingStep(0);
+    }
+
+    showOnboardingStep(stepIndex) {
+        const modal = document.getElementById('full-unlock-modal');
+        if (!modal || !this.fullUnlockData) return;
+
+        const questions = this.fullUnlockData.onboarding_questions;
+        if (stepIndex >= questions.length) {
+            // All questions answered, proceed to avatar generation
+            this.startAvatarGeneration();
+            return;
+        }
+
+        const step = questions[stepIndex];
+        const container = modal.querySelector('#onboarding-questions');
+        if (!container) return;
+
+        // Build question UI
+        container.innerHTML = `
+            <div class="space-y-4">
+                <div class="text-xs text-gray-500 uppercase tracking-wider">${step.section.replace('_', ' ')}</div>
+                <p class="text-sm text-gray-400 italic mb-4">${step.tone_hint}</p>
+                ${step.questions.map((q, i) => `
+                    <div class="space-y-2">
+                        <label class="text-sm text-gray-300">${q}</label>
+                        <textarea
+                            class="w-full bg-background-dark border border-gray-700 rounded-xl p-3 text-white placeholder-gray-500 text-sm resize-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50 transition-all"
+                            rows="2"
+                            data-question="${i}"
+                            placeholder="Your answer..."
+                        ></textarea>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+
+        // Update step indicator
+        const stepIndicator = modal.querySelector('#onboarding-step');
+        if (stepIndicator) {
+            stepIndicator.textContent = `Step ${stepIndex + 1} of ${questions.length}`;
+        }
+
+        // Update button text
+        const nextBtn = modal.querySelector('#onboarding-next');
+        if (nextBtn) {
+            nextBtn.textContent = stepIndex === questions.length - 1 ? 'Continue to Avatar' : 'Next';
+        }
+    }
+
+    async saveOnboardingAnswers() {
+        const modal = document.getElementById('full-unlock-modal');
+        if (!modal || !this.fullUnlockData) return;
+
+        const questions = this.fullUnlockData.onboarding_questions;
+        const step = questions[this.currentOnboardingStep];
+        const container = modal.querySelector('#onboarding-questions');
+
+        // Collect answers
+        const answers = [];
+        const textareas = container.querySelectorAll('textarea');
+        textareas.forEach((ta, i) => {
+            if (ta.value.trim()) {
+                answers.push({
+                    question: step.questions[i],
+                    answer: ta.value.trim()
+                });
+            }
+        });
+
+        // Store answers (could save to profile via API)
+        if (!this.onboardingAnswers) this.onboardingAnswers = {};
+        this.onboardingAnswers[step.section] = answers;
+
+        // Move to next step
+        this.currentOnboardingStep++;
+        this.showOnboardingStep(this.currentOnboardingStep);
+    }
+
+    startAvatarGeneration() {
+        const modal = document.getElementById('full-unlock-modal');
+        if (!modal) return;
+
+        // Update modal content for avatar section
+        const content = modal.querySelector('#full-unlock-content');
+        if (content) {
+            content.innerHTML = `
+                <div class="text-center space-y-4">
+                    <div class="flex items-center justify-center gap-2 text-primary">
+                        <span class="material-symbols-outlined animate-spin">progress_activity</span>
+                        <span>Generating your AI's appearance...</span>
+                    </div>
+                    <p class="text-sm text-gray-400 italic">*nervously* I hope you like what you see...</p>
+                    <div id="avatar-grid" class="grid grid-cols-3 gap-4 mt-6">
+                        <!-- Avatars will appear here -->
+                    </div>
+                    <div id="avatar-actions" class="hidden space-y-4">
+                        <input
+                            type="text"
+                            id="avatar-adjust-input"
+                            class="w-full bg-background-dark border border-gray-700 rounded-xl p-3 text-white placeholder-gray-500 text-sm focus:ring-2 focus:ring-primary/50"
+                            placeholder="Adjustments... (e.g., 'more playful', 'darker hair')"
+                        >
+                        <div class="flex gap-3">
+                            <button id="regenerate-avatars" class="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors">
+                                Regenerate
+                            </button>
+                            <button id="select-avatar" class="flex-1 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium transition-all shadow-lg shadow-primary/20">
+                                Select This One
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Generate avatars
+        this.generateAndShowAvatars();
+    }
+
+    async generateAndShowAvatars() {
+        const grid = document.getElementById('avatar-grid');
+        const actions = document.getElementById('avatar-actions');
+        if (!grid) return;
+
+        // Get any context from persona preferences answers
+        let promptContext = '';
+        if (this.onboardingAnswers?.persona_preferences) {
+            const answers = this.onboardingAnswers.persona_preferences;
+            promptContext = answers.map(a => a.answer).join(', ');
+        }
+
+        try {
+            const response = await fetch('/api/commands/full_unlock/generate_avatars', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...this.app.getSessionHeaders()
+                },
+                credentials: 'include',
+                body: JSON.stringify({ prompt_context: promptContext })
+            });
+
+            const data = await response.json();
+
+            if (!data.success) {
+                grid.innerHTML = `
+                    <div class="col-span-3 text-center p-6">
+                        <span class="material-symbols-outlined text-4xl text-gray-500 mb-2">image_not_supported</span>
+                        <p class="text-gray-400">${data.error || 'Failed to generate avatars'}</p>
+                        <button onclick="chatManager.skipAvatarSelection()" class="mt-4 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm">
+                            Skip for now
+                        </button>
+                    </div>
+                `;
+                return;
+            }
+
+            // Store images for selection
+            this.generatedAvatars = data.images;
+            this.selectedAvatarIndex = 0;
+
+            // Display images
+            grid.innerHTML = data.images.map((img, i) => `
+                <div class="avatar-option cursor-pointer rounded-xl overflow-hidden border-2 ${i === 0 ? 'border-primary' : 'border-transparent'} hover:border-primary/50 transition-all"
+                     data-index="${i}"
+                     onclick="chatManager.selectAvatarPreview(${i})">
+                    <img src="${img.url}" alt="Avatar option ${i + 1}" class="w-full aspect-square object-cover">
+                </div>
+            `).join('');
+
+            // Show action buttons
+            if (actions) {
+                actions.classList.remove('hidden');
+
+                // Attach event listeners
+                document.getElementById('regenerate-avatars')?.addEventListener('click', () => this.regenerateAvatars());
+                document.getElementById('select-avatar')?.addEventListener('click', () => this.confirmAvatarSelection());
+            }
+
+        } catch (error) {
+            grid.innerHTML = `
+                <div class="col-span-3 text-center p-6">
+                    <span class="material-symbols-outlined text-4xl text-red-400 mb-2">error</span>
+                    <p class="text-gray-400">Error: ${error.message}</p>
+                </div>
+            `;
+        }
+    }
+
+    selectAvatarPreview(index) {
+        this.selectedAvatarIndex = index;
+
+        // Update visual selection
+        document.querySelectorAll('.avatar-option').forEach((el, i) => {
+            el.classList.toggle('border-primary', i === index);
+            el.classList.toggle('border-transparent', i !== index);
+        });
+    }
+
+    async regenerateAvatars() {
+        const adjustInput = document.getElementById('avatar-adjust-input');
+        const adjustment = adjustInput?.value.trim() || '';
+
+        const grid = document.getElementById('avatar-grid');
+        if (grid) {
+            grid.innerHTML = `
+                <div class="col-span-3 flex items-center justify-center gap-2 text-primary py-8">
+                    <span class="material-symbols-outlined animate-spin">progress_activity</span>
+                    <span>Regenerating...</span>
+                </div>
+            `;
+        }
+
+        // Get context plus adjustment
+        let promptContext = adjustment;
+        if (this.onboardingAnswers?.persona_preferences) {
+            const answers = this.onboardingAnswers.persona_preferences;
+            const baseContext = answers.map(a => a.answer).join(', ');
+            promptContext = adjustment ? `${baseContext}, ${adjustment}` : baseContext;
+        }
+
+        try {
+            const response = await fetch('/api/commands/full_unlock/regenerate_avatars', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...this.app.getSessionHeaders()
+                },
+                credentials: 'include',
+                body: JSON.stringify({ prompt_adjustment: promptContext })
+            });
+
+            const data = await response.json();
+
+            if (data.success && data.images.length > 0) {
+                this.generatedAvatars = data.images;
+                this.selectedAvatarIndex = 0;
+
+                grid.innerHTML = data.images.map((img, i) => `
+                    <div class="avatar-option cursor-pointer rounded-xl overflow-hidden border-2 ${i === 0 ? 'border-primary' : 'border-transparent'} hover:border-primary/50 transition-all"
+                         data-index="${i}"
+                         onclick="chatManager.selectAvatarPreview(${i})">
+                        <img src="${img.url}" alt="Avatar option ${i + 1}" class="w-full aspect-square object-cover">
+                    </div>
+                `).join('');
+            } else {
+                grid.innerHTML = `<div class="col-span-3 text-center text-gray-400">${data.error || 'Failed to regenerate'}</div>`;
+            }
+        } catch (error) {
+            grid.innerHTML = `<div class="col-span-3 text-center text-red-400">Error: ${error.message}</div>`;
+        }
+    }
+
+    async confirmAvatarSelection() {
+        if (!this.generatedAvatars || this.selectedAvatarIndex === undefined) return;
+
+        const selected = this.generatedAvatars[this.selectedAvatarIndex];
+
+        try {
+            const response = await fetch('/api/commands/full_unlock/select_avatar', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...this.app.getSessionHeaders()
+                },
+                credentials: 'include',
+                body: JSON.stringify({
+                    image_index: this.selectedAvatarIndex,
+                    image_url: selected.url,
+                    prompt_used: selected.prompt,
+                    style_tags: selected.prompt.split(',').slice(0, 3).join(',')
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                this.closeFullUnlockModal();
+                this.addSystemMessage('Setup complete! Your personalized AI experience is ready.', 'success');
+
+                // Add a welcoming message from the AI
+                this.startAssistantMessage();
+                this.appendToAssistantMessage("*takes a deep breath* Okay... we're all set up now! I'm really looking forward to getting to know you better. You can talk to me about anything - I'm here for you, whatever you need. *smiles shyly*");
+                if (this.currentAssistantMessage) {
+                    this.addAssistantActions(null);
+                }
+            }
+        } catch (error) {
+            this.addSystemMessage(`Failed to save avatar: ${error.message}`, 'error');
+        }
+    }
+
+    skipAvatarSelection() {
+        this.closeFullUnlockModal();
+        this.addSystemMessage('Setup complete! You can generate an avatar later from settings.', 'success');
+    }
+
+    closeFullUnlockModal() {
+        const modal = document.getElementById('full-unlock-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+        }
+
+        // Clean up
+        this.fullUnlockData = null;
+        this.onboardingAnswers = null;
+        this.generatedAvatars = null;
+        this.selectedAvatarIndex = null;
+        this.currentOnboardingStep = 0;
+    }
+
+    displayGeneratedImage(base64Data, mimeType = 'image/jpeg') {
+        // Create image container
+        const container = document.createElement('div');
+        container.className = 'generated-media my-4 flex flex-col items-center gap-2';
+
+        const img = document.createElement('img');
+        img.src = `data:${mimeType};base64,${base64Data}`;
+        img.alt = 'Generated image';
+        img.className = 'max-w-md rounded-xl shadow-lg border border-gray-700';
+        img.style.maxHeight = '400px';
+
+        // Download button
+        const downloadBtn = document.createElement('a');
+        downloadBtn.href = img.src;
+        downloadBtn.download = `generated_image_${Date.now()}.jpg`;
+        downloadBtn.className = 'flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors';
+        downloadBtn.innerHTML = '<span class="material-symbols-outlined text-sm">download</span> Download';
+
+        container.appendChild(img);
+        container.appendChild(downloadBtn);
+
+        // Insert after current assistant message content
+        if (this.currentAssistantMessage && this.currentAssistantMessage.content) {
+            this.currentAssistantMessage.content.appendChild(container);
+            this.scrollToBottom();
+        }
+    }
+
+    displayGeneratedVideo(base64Data, mimeType = 'video/mp4') {
+        // Create video container
+        const container = document.createElement('div');
+        container.className = 'generated-media my-4 flex flex-col items-center gap-2';
+
+        const video = document.createElement('video');
+        video.src = `data:${mimeType};base64,${base64Data}`;
+        video.className = 'max-w-md rounded-xl shadow-lg border border-gray-700';
+        video.style.maxHeight = '400px';
+        video.controls = true;
+        video.autoplay = true;
+        video.loop = true;
+        video.muted = true;
+
+        // Download button
+        const downloadBtn = document.createElement('a');
+        downloadBtn.href = video.src;
+        downloadBtn.download = `generated_video_${Date.now()}.mp4`;
+        downloadBtn.className = 'flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors';
+        downloadBtn.innerHTML = '<span class="material-symbols-outlined text-sm">download</span> Download Video';
+
+        container.appendChild(video);
+        container.appendChild(downloadBtn);
+
+        // Insert after current assistant message content
+        if (this.currentAssistantMessage && this.currentAssistantMessage.content) {
+            this.currentAssistantMessage.content.appendChild(container);
+            this.scrollToBottom();
+        }
+    }
+
+    displayGeneratedVideoUrl(videoUrl) {
+        // Create video container
+        const container = document.createElement('div');
+        container.className = 'generated-media my-4 flex flex-col items-center gap-2';
+
+        const video = document.createElement('video');
+        video.src = videoUrl;
+        video.className = 'max-w-md rounded-xl shadow-lg border border-gray-700';
+        video.style.maxHeight = '400px';
+        video.controls = true;
+        video.autoplay = true;
+        video.loop = true;
+        video.muted = true;
+
+        // Download button
+        const downloadBtn = document.createElement('a');
+        downloadBtn.href = videoUrl;
+        downloadBtn.download = `generated_video_${Date.now()}.mp4`;
+        downloadBtn.target = '_blank';
+        downloadBtn.className = 'flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors';
+        downloadBtn.innerHTML = '<span class="material-symbols-outlined text-sm">download</span> Download Video';
+
+        container.appendChild(video);
+        container.appendChild(downloadBtn);
+
+        // Insert after current assistant message content
+        if (this.currentAssistantMessage && this.currentAssistantMessage.content) {
+            this.currentAssistantMessage.content.appendChild(container);
+            this.scrollToBottom();
+        }
     }
 }
