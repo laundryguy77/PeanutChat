@@ -86,7 +86,7 @@ class MemoryService:
                             "similarity": round(similarity, 3),
                             "created_at": mem.created_at
                         })
-                        self.store.update_access(mem.id)
+                        self.store.update_access(mem.id, user_id)
 
             # Sort by similarity * importance weighting
             results.sort(key=lambda x: x["similarity"] * (x["importance"] / 10), reverse=True)

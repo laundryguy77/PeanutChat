@@ -86,8 +86,8 @@ class KnowledgeBase:
             embeddings = await self.embedding_service.get_embeddings_batch(chunk_texts)
         except Exception as e:
             logger.error(f"Embedding generation failed: {e}")
-            # Clean up the document record
-            self.store.delete_document(document.id)
+            # Clean up the document record we just created
+            self.store.delete_document(document.id, user_id)
             return {
                 "status": "error",
                 "message": f"Failed to generate embeddings: {str(e)}"

@@ -1,5 +1,6 @@
 import sqlite3
 import logging
+import uuid
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Optional, Generator
@@ -9,6 +10,15 @@ logger = logging.getLogger(__name__)
 
 # Thread-local storage for connections
 _local = threading.local()
+
+
+class DatabaseError(Exception):
+    """Generic database error with sanitized message.
+
+    Used to wrap raw SQLite errors to prevent information disclosure.
+    The original error is logged internally but not exposed to callers.
+    """
+    pass
 
 
 class DatabaseService:
@@ -35,6 +45,10 @@ class DatabaseService:
             _local.connection.execute("PRAGMA foreign_keys = ON")
         return _local.connection
 
+    def _generate_error_id(self) -> str:
+        """Generate a unique error ID for tracking."""
+        return str(uuid.uuid4())[:8]
+
     @contextmanager
     def get_cursor(self) -> Generator[sqlite3.Cursor, None, None]:
         """Context manager for database cursor with automatic commit/rollback"""
@@ -43,42 +57,98 @@ class DatabaseService:
         try:
             yield cursor
             conn.commit()
+        except sqlite3.Error as e:
+            conn.rollback()
+            error_id = self._generate_error_id()
+            logger.error(f"Database error [{error_id}]: {e}")
+            raise DatabaseError(f"Database operation failed (ref: {error_id})") from None
         except Exception as e:
             conn.rollback()
-            logger.error(f"Database error: {e}")
+            error_id = self._generate_error_id()
+            logger.error(f"Unexpected error [{error_id}]: {e}")
             raise
         finally:
             cursor.close()
+
+    @contextmanager
+    def transaction(self) -> Generator["TransactionContext", None, None]:
+        """Context manager for atomic multi-statement transactions.
+
+        Usage:
+            with db.transaction() as tx:
+                tx.execute("INSERT INTO users ...", params1)
+                tx.execute("INSERT INTO settings ...", params2)
+                # Both succeed or both fail
+
+        If any exception occurs within the context, all changes are rolled back.
+        """
+        conn = self._get_connection()
+        ctx = TransactionContext(conn)
+        try:
+            yield ctx
+            conn.commit()
+        except sqlite3.Error as e:
+            conn.rollback()
+            error_id = self._generate_error_id()
+            logger.error(f"Transaction failed [{error_id}], rolled back: {e}")
+            raise DatabaseError(f"Transaction failed (ref: {error_id})") from None
+        except Exception as e:
+            conn.rollback()
+            error_id = self._generate_error_id()
+            logger.error(f"Transaction failed [{error_id}], rolled back: {e}")
+            raise
 
     def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a query and return the cursor"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute(query, params)
-        conn.commit()
-        return cursor
+        try:
+            cursor.execute(query, params)
+            conn.commit()
+            return cursor
+        except sqlite3.Error as e:
+            conn.rollback()
+            error_id = self._generate_error_id()
+            logger.error(f"Execute failed [{error_id}]: {e}")
+            raise DatabaseError(f"Database operation failed (ref: {error_id})") from None
 
     def executemany(self, query: str, params_list: list) -> sqlite3.Cursor:
         """Execute a query with multiple parameter sets"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.executemany(query, params_list)
-        conn.commit()
-        return cursor
+        try:
+            cursor.executemany(query, params_list)
+            conn.commit()
+            return cursor
+        except sqlite3.Error as e:
+            conn.rollback()
+            error_id = self._generate_error_id()
+            logger.error(f"Executemany failed [{error_id}]: {e}")
+            raise DatabaseError(f"Database operation failed (ref: {error_id})") from None
 
     def fetchone(self, query: str, params: tuple = ()) -> Optional[sqlite3.Row]:
         """Execute query and fetch one result"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute(query, params)
-        return cursor.fetchone()
+        try:
+            cursor.execute(query, params)
+            return cursor.fetchone()
+        except sqlite3.Error as e:
+            error_id = self._generate_error_id()
+            logger.error(f"Fetchone failed [{error_id}]: {e}")
+            raise DatabaseError(f"Database operation failed (ref: {error_id})") from None
 
     def fetchall(self, query: str, params: tuple = ()) -> list:
         """Execute query and fetch all results"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute(query, params)
-        return cursor.fetchall()
+        try:
+            cursor.execute(query, params)
+            return cursor.fetchall()
+        except sqlite3.Error as e:
+            error_id = self._generate_error_id()
+            logger.error(f"Fetchall failed [{error_id}]: {e}")
+            raise DatabaseError(f"Database operation failed (ref: {error_id})") from None
 
     def _run_migrations(self):
         """Run database migrations"""
@@ -358,6 +428,37 @@ class DatabaseService:
         if hasattr(_local, 'connection') and _local.connection is not None:
             _local.connection.close()
             _local.connection = None
+
+
+class TransactionContext:
+    """Helper class for executing multiple statements in a transaction."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Execute a query within this transaction (no auto-commit)."""
+        cursor = self._conn.cursor()
+        cursor.execute(query, params)
+        return cursor
+
+    def executemany(self, query: str, params_list: list) -> sqlite3.Cursor:
+        """Execute a query with multiple parameter sets (no auto-commit)."""
+        cursor = self._conn.cursor()
+        cursor.executemany(query, params_list)
+        return cursor
+
+    def fetchone(self, query: str, params: tuple = ()) -> Optional[sqlite3.Row]:
+        """Execute query and fetch one result."""
+        cursor = self._conn.cursor()
+        cursor.execute(query, params)
+        return cursor.fetchone()
+
+    def fetchall(self, query: str, params: tuple = ()) -> list:
+        """Execute query and fetch all results."""
+        cursor = self._conn.cursor()
+        cursor.execute(query, params)
+        return cursor.fetchall()
 
 
 # Global database instance (initialized lazily)

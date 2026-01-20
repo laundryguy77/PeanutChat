@@ -77,13 +77,17 @@ class MemoryStore:
         )
         return [self._row_to_memory(row) for row in rows]
 
-    def update_access(self, memory_id: str):
-        """Update last_accessed and increment access_count."""
+    def update_access(self, memory_id: str, user_id: int) -> bool:
+        """Update last_accessed and increment access_count (with ownership check).
+
+        Returns True if a record was updated, False if not found or not owned by user.
+        """
         now = datetime.utcnow().isoformat()
-        self.db.execute(
-            "UPDATE memories SET last_accessed = ?, access_count = access_count + 1 WHERE id = ?",
-            (now, memory_id)
+        result = self.db.execute(
+            "UPDATE memories SET last_accessed = ?, access_count = access_count + 1 WHERE id = ? AND user_id = ?",
+            (now, memory_id, user_id)
         )
+        return result.rowcount > 0
 
     def delete_memory(self, memory_id: str, user_id: int) -> bool:
         """Delete a memory (with ownership check)."""

@@ -9,6 +9,11 @@ from app.services.database import get_database
 logger = logging.getLogger(__name__)
 
 
+class ConcurrentModificationError(Exception):
+    """Raised when optimistic locking detects a concurrent modification."""
+    pass
+
+
 def get_default_profile_template() -> Dict[str, Any]:
     """Get the default profile template with all sections."""
     now = datetime.utcnow().isoformat() + "Z"
@@ -371,20 +376,60 @@ class UserProfileStore:
             updated_at=now
         )
 
-    def update_profile_data(self, user_id: int, data: Dict[str, Any]) -> Optional[UserProfile]:
-        """Replace entire profile data."""
+    def update_profile_data(
+        self,
+        user_id: int,
+        data: Dict[str, Any],
+        expected_updated_at: Optional[str] = None
+    ) -> Optional[UserProfile]:
+        """Replace entire profile data.
+
+        Args:
+            user_id: The user's ID
+            data: The new profile data to save
+            expected_updated_at: If provided, uses optimistic locking - update only
+                                 succeeds if current updated_at matches this value.
+                                 Raises ConcurrentModificationError on mismatch.
+
+        Returns:
+            The updated UserProfile, or None if user not found
+
+        Raises:
+            ConcurrentModificationError: If expected_updated_at doesn't match (concurrent edit)
+        """
         now = datetime.utcnow().isoformat() + "Z"
 
         # Update meta timestamp
         if "meta_system" in data:
             data["meta_system"]["profile_last_updated"] = now
 
-        self.db.execute(
-            """UPDATE user_profiles
-               SET profile_data = ?, updated_at = ?
-               WHERE user_id = ?""",
-            (json.dumps(data), now, user_id)
-        )
+        if expected_updated_at:
+            # Optimistic locking: only update if version matches
+            result = self.db.execute(
+                """UPDATE user_profiles
+                   SET profile_data = ?, updated_at = ?
+                   WHERE user_id = ? AND updated_at = ?""",
+                (json.dumps(data), now, user_id, expected_updated_at)
+            )
+            if result.rowcount == 0:
+                # Check if profile exists or was concurrently modified
+                existing = self.db.fetchone(
+                    "SELECT updated_at FROM user_profiles WHERE user_id = ?",
+                    (user_id,)
+                )
+                if existing:
+                    raise ConcurrentModificationError(
+                        f"Profile was modified by another request. "
+                        f"Expected version {expected_updated_at}, found {existing['updated_at']}"
+                    )
+                return None
+        else:
+            self.db.execute(
+                """UPDATE user_profiles
+                   SET profile_data = ?, updated_at = ?
+                   WHERE user_id = ?""",
+                (json.dumps(data), now, user_id)
+            )
 
         return self.get_profile(user_id)
 
@@ -393,9 +438,13 @@ class UserProfileStore:
         user_id: int,
         path: str,
         value: Any,
-        operation: str = "set"
+        operation: str = "set",
+        max_retries: int = 3
     ) -> Optional[UserProfile]:
-        """Update a specific field using dot notation.
+        """Update a specific field using dot notation with optimistic locking.
+
+        Uses optimistic locking to prevent lost updates from concurrent modifications.
+        Automatically retries on conflict up to max_retries times.
 
         Operations:
         - set: Replace value
@@ -404,49 +453,73 @@ class UserProfileStore:
         - increment: Add to number
         - decrement: Subtract from number
         - toggle: Flip boolean
+
+        Args:
+            user_id: The user's ID
+            path: Dot-notation path to the field (e.g., "identity.name")
+            value: The value to set/append/remove/etc
+            operation: The operation to perform
+            max_retries: Maximum retry attempts on concurrent modification
+
+        Returns:
+            The updated UserProfile, or None if user not found
+
+        Raises:
+            ConcurrentModificationError: If max retries exceeded due to concurrent edits
         """
-        profile = self.get_profile(user_id)
-        if not profile:
-            return None
+        for attempt in range(max_retries):
+            profile = self.get_profile(user_id)
+            if not profile:
+                return None
 
-        data = profile.profile_data
+            data = profile.profile_data
+            expected_version = profile.updated_at
 
-        # Navigate to parent and get key
-        parts = path.split(".")
-        parent = data
-        for part in parts[:-1]:
-            if part not in parent:
-                parent[part] = {}
-            parent = parent[part]
+            # Navigate to parent and get key
+            parts = path.split(".")
+            parent = data
+            for part in parts[:-1]:
+                if part not in parent:
+                    parent[part] = {}
+                parent = parent[part]
 
-        key = parts[-1]
-        current = parent.get(key)
+            key = parts[-1]
+            current = parent.get(key)
 
-        # Apply operation
-        if operation == "set":
-            parent[key] = value
-        elif operation == "append":
-            if not isinstance(current, list):
-                parent[key] = []
-            if value not in parent[key]:
-                parent[key].append(value)
-        elif operation == "remove":
-            if isinstance(current, list) and value in current:
-                parent[key].remove(value)
-        elif operation == "increment":
-            if isinstance(current, (int, float)):
-                parent[key] = current + (value if isinstance(value, (int, float)) else 1)
-            else:
-                parent[key] = value if isinstance(value, (int, float)) else 1
-        elif operation == "decrement":
-            if isinstance(current, (int, float)):
-                parent[key] = current - (value if isinstance(value, (int, float)) else 1)
-            else:
-                parent[key] = -(value if isinstance(value, (int, float)) else 1)
-        elif operation == "toggle":
-            parent[key] = not bool(current)
+            # Apply operation
+            if operation == "set":
+                parent[key] = value
+            elif operation == "append":
+                if not isinstance(current, list):
+                    parent[key] = []
+                if value not in parent[key]:
+                    parent[key].append(value)
+            elif operation == "remove":
+                if isinstance(current, list) and value in current:
+                    parent[key].remove(value)
+            elif operation == "increment":
+                if isinstance(current, (int, float)):
+                    parent[key] = current + (value if isinstance(value, (int, float)) else 1)
+                else:
+                    parent[key] = value if isinstance(value, (int, float)) else 1
+            elif operation == "decrement":
+                if isinstance(current, (int, float)):
+                    parent[key] = current - (value if isinstance(value, (int, float)) else 1)
+                else:
+                    parent[key] = -(value if isinstance(value, (int, float)) else 1)
+            elif operation == "toggle":
+                parent[key] = not bool(current)
 
-        return self.update_profile_data(user_id, data)
+            try:
+                return self.update_profile_data(user_id, data, expected_updated_at=expected_version)
+            except ConcurrentModificationError:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Concurrent modification detected for user {user_id}, "
+                        f"retrying ({attempt + 1}/{max_retries})"
+                    )
+                    continue
+                raise
 
     def set_adult_mode(self, user_id: int, enabled: bool) -> Optional[UserProfile]:
         """Enable or disable adult mode."""

@@ -116,16 +116,50 @@ class KnowledgeStore:
             params_list
         )
 
-    def get_document(self, document_id: str, user_id: int = None) -> Optional[Document]:
-        """Get a document by ID"""
-        query = "SELECT * FROM documents WHERE id = ?"
-        params = [document_id]
+    def get_document(self, document_id: str, user_id: int) -> Optional[Document]:
+        """Get a document by ID with user ownership validation.
 
-        if user_id is not None:
-            query += " AND user_id = ?"
-            params.append(user_id)
+        Args:
+            document_id: The document's unique ID
+            user_id: The user's ID (required for security - enforces ownership)
 
-        row = self.db.fetchone(query, tuple(params))
+        Returns:
+            Document if found and owned by user, None otherwise
+        """
+        row = self.db.fetchone(
+            "SELECT * FROM documents WHERE id = ? AND user_id = ?",
+            (document_id, user_id)
+        )
+        if not row:
+            return None
+
+        return Document(
+            id=row["id"],
+            user_id=row["user_id"],
+            filename=row["filename"],
+            file_type=row["file_type"],
+            file_hash=row["file_hash"],
+            chunk_count=row["chunk_count"],
+            embedding_model=row["embedding_model"],
+            created_at=row["created_at"]
+        )
+
+    def get_document_unsafe(self, document_id: str) -> Optional[Document]:
+        """Get a document by ID WITHOUT user validation.
+
+        WARNING: Only use for internal/admin operations where cross-user
+        access is intentional (e.g., cascade deletes, migrations).
+
+        Args:
+            document_id: The document's unique ID
+
+        Returns:
+            Document if found, None otherwise
+        """
+        row = self.db.fetchone(
+            "SELECT * FROM documents WHERE id = ?",
+            (document_id,)
+        )
         if not row:
             return None
 
@@ -215,20 +249,51 @@ class KnowledgeStore:
 
         return results
 
-    def delete_document(self, document_id: str, user_id: int = None) -> bool:
-        """Delete a document and all its chunks"""
-        # Verify ownership if user_id provided
-        if user_id is not None:
-            doc = self.get_document(document_id, user_id)
-            if not doc:
-                return False
+    def delete_document(self, document_id: str, user_id: int) -> bool:
+        """Delete a document and all its chunks with user ownership validation.
+
+        Args:
+            document_id: The document's unique ID
+            user_id: The user's ID (required for security - enforces ownership)
+
+        Returns:
+            True if document was deleted, False if not found or not owned by user
+        """
+        # Verify ownership before delete
+        doc = self.get_document(document_id, user_id)
+        if not doc:
+            return False
+
+        # Delete chunks first (due to foreign key)
+        self.db.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+        # Delete document
+        self.db.execute("DELETE FROM documents WHERE id = ? AND user_id = ?", (document_id, user_id))
+
+        logger.info(f"Deleted document {document_id} for user {user_id}")
+        return True
+
+    def delete_document_unsafe(self, document_id: str) -> bool:
+        """Delete a document WITHOUT user validation.
+
+        WARNING: Only use for internal/admin operations where cross-user
+        access is intentional (e.g., cascade deletes, migrations).
+
+        Args:
+            document_id: The document's unique ID
+
+        Returns:
+            True if document was deleted, False if not found
+        """
+        doc = self.get_document_unsafe(document_id)
+        if not doc:
+            return False
 
         # Delete chunks first (due to foreign key)
         self.db.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
         # Delete document
         self.db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
 
-        logger.info(f"Deleted document {document_id}")
+        logger.info(f"Deleted document {document_id} (unsafe)")
         return True
 
     def get_user_stats(self, user_id: int) -> Dict[str, int]:
