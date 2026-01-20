@@ -1,5 +1,8 @@
 import logging
+import glob
+import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
 import bcrypt
@@ -194,10 +197,52 @@ class AuthService:
         self.db.execute(query, tuple(values))
         return True
 
-    def delete_user(self, user_id: int) -> bool:
-        """Delete a user and all their data"""
+    async def delete_user(self, user_id: int) -> bool:
+        """Delete a user and all their associated data.
+
+        Cleans up:
+        - Conversation JSON files
+        - Avatar images
+        - Session unlock state
+        - User database record
+        """
+        from app.services.conversation_store import conversation_store
+        from app.services.user_profile_store import get_user_profile_store
+
+        # 1. Delete all conversations for this user
+        try:
+            deleted_convs = await conversation_store.delete_for_user(user_id)
+            logger.info(f"Deleted {deleted_convs} conversations for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error deleting conversations for user {user_id}: {e}")
+
+        # 2. Delete avatar files matching avatars/{user_id}_*.png
+        try:
+            avatars_dir = Path("static/avatars")
+            if avatars_dir.exists():
+                avatar_pattern = f"{user_id}_*.png"
+                deleted_avatars = 0
+                for avatar_path in avatars_dir.glob(avatar_pattern):
+                    avatar_path.unlink()
+                    deleted_avatars += 1
+                if deleted_avatars > 0:
+                    logger.info(f"Deleted {deleted_avatars} avatar(s) for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error deleting avatars for user {user_id}: {e}")
+
+        # 3. Clear session unlock state
+        try:
+            profile_store = get_user_profile_store()
+            cleared = profile_store.clear_user_sessions(user_id)
+            if cleared > 0:
+                logger.info(f"Cleared {cleared} session unlock(s) for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error clearing sessions for user {user_id}: {e}")
+
+        # 4. Delete user record from database
         self.db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        logger.info(f"Deleted user {user_id}")
+        logger.info(f"Deleted user {user_id} from database")
+
         return True
 
 

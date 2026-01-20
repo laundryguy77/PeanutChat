@@ -346,6 +346,35 @@ class ConversationStore:
                 file_path.unlink()
             return True
 
+    async def delete_for_user(self, user_id: int) -> int:
+        """Delete all conversations for a specific user.
+
+        Args:
+            user_id: The user ID whose conversations should be deleted
+
+        Returns:
+            Number of conversations deleted
+        """
+        async with self._lock:
+            # Find all conversations owned by this user
+            to_delete = [
+                conv_id for conv_id, conv in self._cache.items()
+                if conv.user_id == user_id
+            ]
+
+            deleted_count = 0
+            for conv_id in to_delete:
+                del self._cache[conv_id]
+                file_path = self.storage_dir / f"{conv_id}.json"
+                if file_path.exists():
+                    file_path.unlink()
+                deleted_count += 1
+
+            if deleted_count > 0:
+                logger.info(f"Deleted {deleted_count} conversations for user {user_id}")
+
+            return deleted_count
+
     async def rename(self, conv_id: str, new_title: str) -> bool:
         """Rename a conversation"""
         async with self._lock:
@@ -400,6 +429,27 @@ class ConversationStore:
             conv.compaction_history = []
             conv.current_summary = None
             conv.summary_token_count = 0
+            await self._save(conv)
+            return True
+
+    async def truncate_messages(self, conv_id: str, keep_count: int) -> bool:
+        """
+        Truncate messages, keeping only the first 'keep_count' messages.
+
+        Args:
+            conv_id: Conversation ID
+            keep_count: Number of messages to keep from the start
+
+        Returns:
+            True if successful, False if conversation not found
+        """
+        async with self._lock:
+            conv = self._cache.get(conv_id)
+            if not conv:
+                return False
+
+            conv.messages = conv.messages[:keep_count]
+            conv.updated_at = datetime.now().isoformat()
             await self._save(conv)
             return True
 

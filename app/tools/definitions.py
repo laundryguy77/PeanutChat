@@ -448,9 +448,9 @@ IMAGE_TO_VIDEO_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "image_path": {
+                "image_base64": {
                     "type": "string",
-                    "description": "Path to the source image file to animate"
+                    "description": "Base64-encoded source image to animate"
                 },
                 "prompt": {
                     "type": "string",
@@ -461,7 +461,7 @@ IMAGE_TO_VIDEO_TOOL = {
                     "description": "Things to avoid in the animation"
                 }
             },
-            "required": ["image_path"]
+            "required": ["image_base64"]
         }
     }
 }

@@ -583,8 +583,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                         })
                     }
 
-                    # Execute the tool
-                    result = await tool_executor.execute(tc)
+                    # Execute the tool with explicit context
+                    result = await tool_executor.execute(tc, user_id=user.id, conversation_id=conv_id)
                     tool_results.append(result)
 
                     yield {
@@ -893,9 +893,7 @@ async def regenerate_response(
     user_images = conv.messages[user_msg_index].images
 
     # Remove messages from the assistant message onward
-    async with conversation_store._lock:
-        conv.messages = conv.messages[:msg_index]
-        await conversation_store._save(conv)
+    await conversation_store.truncate_messages(conv_id, msg_index)
 
     async def event_generator():
         settings = get_settings()
@@ -1052,7 +1050,7 @@ async def regenerate_response(
                             "arguments": func.get("arguments")
                         })
                     }
-                    result = await tool_executor.execute(tc)
+                    result = await tool_executor.execute(tc, user_id=user.id, conversation_id=conv_id)
                     yield {
                         "event": "tool_result",
                         "data": json.dumps({

@@ -7,6 +7,7 @@ from app.models.auth_schemas import (
     UserSettings, PasswordChange
 )
 from app.services.auth_service import get_auth_service
+from app.services.rate_limiter import get_login_limiter
 from app.middleware.auth import require_auth
 
 logger = logging.getLogger(__name__)
@@ -47,16 +48,35 @@ async def register(user_data: UserCreate, response: Response):
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(credentials: UserLogin, response: Response):
+async def login(credentials: UserLogin, request: Request, response: Response):
     """Login with username and password"""
-    auth_service = get_auth_service()
+    # Rate limiting: use IP + username as key
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{client_ip}:{credentials.username}"
 
+    limiter = get_login_limiter()
+    allowed, retry_after = limiter.is_allowed(rate_key)
+
+    if not allowed:
+        response.headers["Retry-After"] = str(retry_after)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many login attempts. Try again in {retry_after} seconds."
+        )
+
+    auth_service = get_auth_service()
     user = auth_service.authenticate_user(credentials.username, credentials.password)
+
     if not user:
+        # Record failed attempt
+        limiter.record_attempt(rate_key, success=False)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password"
         )
+
+    # Record successful attempt (clears rate limit tracking)
+    limiter.record_attempt(rate_key, success=True)
 
     # Create access token
     access_token = auth_service.create_access_token(user.id, user.username)
@@ -100,7 +120,10 @@ async def refresh_token(request: Request, response: Response):
 
     try:
         payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-        user_id = int(payload.get("sub"))
+        sub = payload.get("sub")
+        if not sub:
+            raise HTTPException(status_code=401, detail="Invalid token: missing subject")
+        user_id = int(sub)
         username = payload.get("username")
 
         # Issue new token with fresh expiration
@@ -181,6 +204,6 @@ async def delete_account(
 ):
     """Delete user account and all associated data"""
     auth_service = get_auth_service()
-    auth_service.delete_user(user.id)
+    await auth_service.delete_user(user.id)
     response.delete_cookie(key="access_token")
     return {"message": "Account deleted successfully"}

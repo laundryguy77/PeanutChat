@@ -49,8 +49,23 @@ class ToolExecutor:
         """Get image by reference"""
         return self.image_registry.get(reference)
 
-    async def execute(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a tool call and return the result"""
+    async def execute(
+        self,
+        tool_call: Dict[str, Any],
+        user_id: Optional[int] = None,
+        conversation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Execute a tool call and return the result.
+
+        Args:
+            tool_call: The tool call to execute
+            user_id: User ID for user-scoped tools (overrides current_user_id)
+            conversation_id: Conversation ID for conversation-scoped tools (overrides current_conversation_id)
+        """
+        # Use explicit parameters if provided, otherwise fall back to instance state
+        effective_user_id = user_id if user_id is not None else self.current_user_id
+        effective_conv_id = conversation_id if conversation_id is not None else self.current_conversation_id
+
         function = tool_call.get("function", {})
         name = function.get("name")
         arguments = function.get("arguments", {})
@@ -74,19 +89,19 @@ class ToolExecutor:
         elif name == "browse_website":
             return await self._execute_browse_website(arguments)
         elif name == "search_conversations":
-            return await self._execute_conversation_search(arguments)
+            return await self._execute_conversation_search(arguments, effective_conv_id)
         elif name == "search_knowledge_base":
-            return await self._execute_knowledge_search(arguments)
+            return await self._execute_knowledge_search(arguments, effective_user_id)
         elif name == "add_memory":
-            return await self._execute_add_memory(arguments)
+            return await self._execute_add_memory(arguments, effective_user_id)
         elif name == "query_memory":
-            return await self._execute_query_memory(arguments)
+            return await self._execute_query_memory(arguments, effective_user_id)
         elif name == "set_conversation_title":
-            return await self._execute_set_conversation_title(arguments)
+            return await self._execute_set_conversation_title(arguments, effective_conv_id)
         elif name == "generate_video":
-            return await self._execute_generate_video(arguments)
+            return await self._execute_generate_video(arguments, effective_user_id)
         elif name == "text_to_image":
-            return await self._execute_text_to_image(arguments)
+            return await self._execute_text_to_image(arguments, effective_user_id)
         elif name == "image_to_image":
             return await self._execute_image_to_image(arguments)
         elif name == "inpaint_image":
@@ -98,21 +113,21 @@ class ToolExecutor:
         elif name == "image_to_video":
             return await self._execute_image_to_video(arguments)
         elif name == "user_profile_read":
-            return await self._execute_user_profile_read(arguments)
+            return await self._execute_user_profile_read(arguments, effective_user_id)
         elif name == "user_profile_update":
-            return await self._execute_user_profile_update(arguments)
+            return await self._execute_user_profile_update(arguments, effective_user_id)
         elif name == "user_profile_log_event":
-            return await self._execute_user_profile_log_event(arguments)
+            return await self._execute_user_profile_log_event(arguments, effective_user_id)
         elif name == "user_profile_enable_section":
-            return await self._execute_user_profile_enable_section(arguments)
+            return await self._execute_user_profile_enable_section(arguments, effective_user_id)
         elif name == "user_profile_add_nested":
-            return await self._execute_user_profile_add_nested(arguments)
+            return await self._execute_user_profile_add_nested(arguments, effective_user_id)
         elif name == "user_profile_query":
-            return await self._execute_user_profile_query(arguments)
+            return await self._execute_user_profile_query(arguments, effective_user_id)
         elif name == "user_profile_export":
-            return await self._execute_user_profile_export(arguments)
+            return await self._execute_user_profile_export(arguments, effective_user_id)
         elif name == "user_profile_reset":
-            return await self._execute_user_profile_reset(arguments)
+            return await self._execute_user_profile_reset(arguments, effective_user_id)
         elif name.startswith("mcp_"):
             # Route to MCP manager for MCP tools
             return await self._execute_mcp_tool(name, arguments)
@@ -441,10 +456,40 @@ class ToolExecutor:
                 "success": False
             }
 
+        # Validate URL scheme
+        url = url.strip()
+        if not url.startswith(('http://', 'https://')):
+            return {
+                "error": "URL must start with http:// or https://",
+                "success": False
+            }
+
+        # Parse URL to get hostname
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname
+            if not hostname:
+                return {
+                    "error": "Invalid URL: could not extract hostname",
+                    "success": False
+                }
+        except Exception as e:
+            return {
+                "error": f"Invalid URL format: {str(e)}",
+                "success": False
+            }
+
+        # Security check: block private/internal IPs
+        if self._is_private_ip(hostname):
+            return {
+                "error": "Access to private/internal network addresses is blocked for security reasons.",
+                "success": False
+            }
+
         logger.debug(f"Fetching URL: {url}")
 
         try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, max_redirects=5) as client:
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -531,7 +576,9 @@ class ToolExecutor:
 
         return '\n'.join(lines)
 
-    async def _execute_conversation_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_conversation_search(
+        self, args: Dict[str, Any], conversation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Search through previous conversations for context"""
         query = args.get("query", "")
 
@@ -545,7 +592,7 @@ class ToolExecutor:
             logger.info(f"Conversation search: {query}")
             results = conversation_store.search_conversations(
                 query=query,
-                exclude_conv_id=self.current_conversation_id,
+                exclude_conv_id=conversation_id,
                 max_results=10
             )
 
@@ -585,7 +632,9 @@ class ToolExecutor:
                 "success": False
             }
 
-    async def _execute_knowledge_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_knowledge_search(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Search the user's knowledge base for relevant documents"""
         query = args.get("query", "")
 
@@ -595,7 +644,7 @@ class ToolExecutor:
                 "success": False
             }
 
-        if not self.current_user_id:
+        if not user_id:
             return {
                 "success": True,
                 "query": query,
@@ -608,7 +657,7 @@ class ToolExecutor:
             logger.info(f"Knowledge base search: {query}")
             kb = get_knowledge_base()
             results = await kb.search(
-                user_id=self.current_user_id,
+                user_id=user_id,
                 query=query,
                 top_k=5,
                 threshold=0.3
@@ -650,14 +699,16 @@ class ToolExecutor:
                 "success": False
             }
 
-    async def _execute_add_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_add_memory(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Add information to user's memory."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         memory_service = get_memory_service()
         result = await memory_service.add_memory(
-            user_id=self.current_user_id,
+            user_id=user_id,
             content=args.get("content", ""),
             category=args.get("category", "general"),
             importance=args.get("importance", 5),
@@ -665,14 +716,16 @@ class ToolExecutor:
         )
         return result
 
-    async def _execute_query_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_query_memory(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Query user's memory."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         memory_service = get_memory_service()
         results = await memory_service.query_memories(
-            user_id=self.current_user_id,
+            user_id=user_id,
             query=args.get("query", ""),
             top_k=5
         )
@@ -683,14 +736,16 @@ class ToolExecutor:
             "count": len(results)
         }
 
-    async def _execute_set_conversation_title(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_set_conversation_title(
+        self, args: Dict[str, Any], conversation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Set the title of the current conversation."""
         title = args.get("title", "").strip()
 
         if not title:
             return {"success": False, "error": "Title is required"}
 
-        if not self.current_conversation_id:
+        if not conversation_id:
             return {"success": False, "error": "No active conversation"}
 
         # Limit title length
@@ -698,7 +753,7 @@ class ToolExecutor:
             title = title[:100]
 
         try:
-            success = await conversation_store.rename(self.current_conversation_id, title)
+            success = await conversation_store.rename(conversation_id, title)
             if success:
                 logger.info(f"Conversation title set to: {title}")
                 return {
@@ -712,7 +767,9 @@ class ToolExecutor:
             logger.error(f"Error setting conversation title: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _execute_generate_video(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_generate_video(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Generate a video using Hugging Face Spaces."""
         import asyncio
 
@@ -723,10 +780,10 @@ class ToolExecutor:
             return {"success": False, "error": "Prompt is required"}
 
         # Inject avatar style from profile for consistent character
-        if self.current_user_id:
+        if user_id:
             try:
                 profile_service = get_user_profile_service()
-                profile_data = await profile_service.get_profile(self.current_user_id)
+                profile_data = await profile_service.get_profile(user_id)
                 if profile_data:
                     profile = profile_data.get("profile", {})
                     persona = profile.get("persona_preferences", {})
@@ -837,13 +894,13 @@ class ToolExecutor:
             else:
                 return {"success": False, "error": f"Video generation failed: {error_msg[:200]}"}
 
-    async def _get_avatar_style_prefix(self) -> str:
+    async def _get_avatar_style_prefix(self, user_id: Optional[int] = None) -> str:
         """Get avatar style from user profile for consistent character generation."""
-        if not self.current_user_id:
+        if not user_id:
             return ""
         try:
             profile_service = get_user_profile_service()
-            profile_data = await profile_service.get_profile(self.current_user_id)
+            profile_data = await profile_service.get_profile(user_id)
             if profile_data:
                 profile = profile_data.get("profile", {})
                 persona = profile.get("persona_preferences", {})
@@ -854,7 +911,9 @@ class ToolExecutor:
             logger.warning(f"Failed to get avatar style: {e}")
         return ""
 
-    async def _execute_text_to_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_text_to_image(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Generate an image from text using HuggingFace Spaces (FLUX.1/SD)."""
         import tempfile
 
@@ -863,7 +922,7 @@ class ToolExecutor:
             return {"success": False, "error": "Prompt is required"}
 
         # Inject avatar style from profile for consistent character
-        avatar_style = await self._get_avatar_style_prefix()
+        avatar_style = await self._get_avatar_style_prefix(user_id)
         if avatar_style:
             prompt = f"{avatar_style}. {prompt}"
             logger.debug(f"Injected avatar style into image prompt: {avatar_style}")
@@ -1079,26 +1138,34 @@ class ToolExecutor:
     async def _execute_image_to_video(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Animate an image into video using HuggingFace Spaces via Playwright."""
         import os
-        image_path = args.get("image_path", "").strip()
-        if not image_path:
-            return {"success": False, "error": "Image path is required"}
+        import tempfile
+        import base64
 
-        if not os.path.exists(image_path):
-            return {"success": False, "error": f"Image not found: {image_path}"}
+        image_base64 = args.get("image_base64", "").strip()
+        if not image_base64:
+            return {"success": False, "error": "image_base64 is required"}
 
         prompt = args.get("prompt", "")
         negative_prompt = args.get("negative_prompt", "")
 
-        logger.info(f"Image-to-video generation: {image_path}")
+        logger.info("Image-to-video generation from base64 input")
 
         try:
-            async with VideoGenerator(headless=True, timeout=300000) as gen:
-                result = await gen.image_to_video(
-                    image_path=image_path,
-                    prompt=prompt,
-                    negative_prompt=negative_prompt,
-                    return_base64=True
-                )
+            # Save base64 image to temp file
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                f.write(base64.b64decode(image_base64))
+                temp_image_path = f.name
+
+            try:
+                async with VideoGenerator(headless=True, timeout=300000) as gen:
+                    result = await gen.image_to_video(
+                        image_path=temp_image_path,
+                        prompt=prompt,
+                        negative_prompt=negative_prompt,
+                        return_base64=True
+                    )
+            finally:
+                os.unlink(temp_image_path)
 
             if result.get("success"):
                 return {
@@ -1123,9 +1190,11 @@ class ToolExecutor:
 
     # User Profile Tool Executors
 
-    async def _execute_user_profile_read(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_user_profile_read(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Read user profile sections."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         profile_service = get_user_profile_service()
@@ -1133,15 +1202,17 @@ class ToolExecutor:
         include_disabled = args.get("include_disabled", False)
 
         result = await profile_service.read_sections(
-            user_id=self.current_user_id,
+            user_id=user_id,
             sections=sections,
             include_disabled=include_disabled
         )
         return {"success": True, "profile": result}
 
-    async def _execute_user_profile_update(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_user_profile_update(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Update user profile fields."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         profile_service = get_user_profile_service()
@@ -1149,48 +1220,54 @@ class ToolExecutor:
         reason = args.get("reason", "AI-initiated update")
 
         result = await profile_service.update_profile(
-            user_id=self.current_user_id,
+            user_id=user_id,
             updates=updates,
             reason=reason
         )
         return {"success": True, "updated": True}
 
-    async def _execute_user_profile_log_event(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_user_profile_log_event(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Log an interaction event."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         profile_service = get_user_profile_service()
         result = await profile_service.log_event(
-            user_id=self.current_user_id,
+            user_id=user_id,
             event_type=args.get("event_type"),
             context=args.get("context"),
             severity=args.get("severity", "moderate")
         )
         return result
 
-    async def _execute_user_profile_enable_section(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_user_profile_enable_section(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Enable or disable a sensitive section."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         profile_service = get_user_profile_service()
         result = await profile_service.enable_section(
-            user_id=self.current_user_id,
+            user_id=user_id,
             section=args.get("section"),
             user_confirmed=args.get("user_confirmed", False),
             enabled=args.get("enabled", True)
         )
         return result
 
-    async def _execute_user_profile_add_nested(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_user_profile_add_nested(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Add to a nested section."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         profile_service = get_user_profile_service()
         result = await profile_service.add_nested(
-            user_id=self.current_user_id,
+            user_id=user_id,
             section=args.get("section"),
             domain=args.get("domain"),
             key=args.get("key"),
@@ -1198,35 +1275,41 @@ class ToolExecutor:
         )
         return result
 
-    async def _execute_user_profile_query(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_user_profile_query(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Query the user profile."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         profile_service = get_user_profile_service()
         result = await profile_service.query_profile(
-            user_id=self.current_user_id,
+            user_id=user_id,
             query=args.get("query", "")
         )
         return result
 
-    async def _execute_user_profile_export(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_user_profile_export(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Export user profile."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         profile_service = get_user_profile_service()
         result = await profile_service.export_profile(
-            user_id=self.current_user_id,
+            user_id=user_id,
             format=args.get("format", "json"),
             tier=args.get("tier", "exportable"),
             user_confirmed=args.get("user_confirmed", False)
         )
         return {"success": True, "export": result}
 
-    async def _execute_user_profile_reset(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_user_profile_reset(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Reset user profile sections."""
-        if not self.current_user_id:
+        if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
         if not args.get("user_confirmed"):
@@ -1234,7 +1317,7 @@ class ToolExecutor:
 
         profile_service = get_user_profile_service()
         result = await profile_service.reset_profile(
-            user_id=self.current_user_id,
+            user_id=user_id,
             sections=args.get("sections", []),
             preserve_identity=args.get("preserve_identity", True)
         )
