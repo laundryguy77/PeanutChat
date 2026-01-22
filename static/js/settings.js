@@ -22,6 +22,13 @@ export class SettingsManager {
             }
         });
 
+        // ESC key to close
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !this.modal.classList.contains('hidden')) {
+                this.hideModal();
+            }
+        });
+
         // Save button
         document.getElementById('save-settings').addEventListener('click', () => {
             this.saveSettings();

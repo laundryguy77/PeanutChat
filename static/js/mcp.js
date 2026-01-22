@@ -129,6 +129,16 @@ class MCPManager {
             modal.addEventListener('click', (e) => {
                 if (e.target === modal) this.hideAddModal();
             });
+
+            // ESC key to close
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    const mcpModal = document.getElementById('mcp-add-modal');
+                    if (mcpModal && !mcpModal.classList.contains('hidden')) {
+                        this.hideAddModal();
+                    }
+                }
+            });
         }
 
         // Clear form and show

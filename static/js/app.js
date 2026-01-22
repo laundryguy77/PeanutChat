@@ -281,8 +281,29 @@ class App {
             return;
         }
 
-        if (password.length < 6) {
-            errorDiv.textContent = 'Password must be at least 6 characters';
+        // Password validation to match backend requirements
+        if (password.length < 12) {
+            errorDiv.textContent = 'Password must be at least 12 characters';
+            errorDiv.classList.remove('hidden');
+            return;
+        }
+        if (!/[A-Z]/.test(password)) {
+            errorDiv.textContent = 'Password must contain at least one uppercase letter';
+            errorDiv.classList.remove('hidden');
+            return;
+        }
+        if (!/[a-z]/.test(password)) {
+            errorDiv.textContent = 'Password must contain at least one lowercase letter';
+            errorDiv.classList.remove('hidden');
+            return;
+        }
+        if (!/\d/.test(password)) {
+            errorDiv.textContent = 'Password must contain at least one digit';
+            errorDiv.classList.remove('hidden');
+            return;
+        }
+        if (!/[!@#$%^&*(),.?":{}|<>_\-+=\[\]\\;'`~]/.test(password)) {
+            errorDiv.textContent = 'Password must contain at least one special character';
             errorDiv.classList.remove('hidden');
             return;
         }
@@ -472,6 +493,7 @@ class App {
             this.modelsData = {}; // Store model data for capability lookup
 
             if (chatModels.length > 0) {
+                let selectedModel = null;
                 chatModels.forEach(model => {
                     // Store model data for later use
                     this.modelsData[model.name] = model;
@@ -493,11 +515,22 @@ class App {
                     if (model.name === data.current) {
                         option.selected = true;
                         this.currentModel = model.name;
-                        // Update header capability indicators for current model
-                        this.updateCapabilityIndicators(model);
+                        selectedModel = model;
                     }
                     select.appendChild(option);
                 });
+
+                // If no model matched data.current, use the first model as default
+                if (!selectedModel && chatModels.length > 0) {
+                    select.selectedIndex = 0;
+                    this.currentModel = chatModels[0].name;
+                    selectedModel = chatModels[0];
+                }
+
+                // Always update capability indicators for the selected/default model
+                if (selectedModel) {
+                    this.updateCapabilityIndicators(selectedModel);
+                }
             } else {
                 const option = document.createElement('option');
                 option.value = '';
@@ -1090,6 +1123,20 @@ class App {
         });
         document.getElementById('save-edit')?.addEventListener('click', () => {
             this.chatManager.saveEdit();
+        });
+
+        // ESC key to close modals
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                const renameModal = document.getElementById('rename-modal');
+                const editModal = document.getElementById('edit-modal');
+                if (renameModal && !renameModal.classList.contains('hidden')) {
+                    renameModal.classList.add('hidden');
+                }
+                if (editModal && !editModal.classList.contains('hidden')) {
+                    editModal.classList.add('hidden');
+                }
+            }
         });
 
     }

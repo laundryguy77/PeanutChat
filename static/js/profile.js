@@ -218,9 +218,14 @@ class ProfileManager {
             const modalHtml = `
                 <div id="adult-mode-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
                     <div class="bg-surface-dark border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
-                        <div class="p-6 border-b border-gray-700">
-                            <h2 class="font-display font-bold text-lg text-white">Unlock Uncensored Mode</h2>
-                            <p class="text-xs text-gray-500 mt-1">Enter the 4-digit passcode</p>
+                        <div class="flex items-center justify-between p-6 border-b border-gray-700">
+                            <div>
+                                <h2 class="font-display font-bold text-lg text-white">Unlock Uncensored Mode</h2>
+                                <p class="text-xs text-gray-500 mt-1">Enter the 4-digit passcode</p>
+                            </div>
+                            <button id="adult-modal-close" class="text-gray-400 hover:text-white transition-colors">
+                                <span class="material-symbols-outlined">close</span>
+                            </button>
                         </div>
                         <div class="p-6">
                             <div id="adult-mode-error" class="hidden mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"></div>
@@ -247,10 +252,32 @@ class ProfileManager {
             `;
             document.body.insertAdjacentHTML('beforeend', modalHtml);
 
+            // Add close button handler
+            document.getElementById('adult-modal-close').addEventListener('click', () => {
+                this.hideAdultModal();
+            });
+
             // Add enter key handler
             document.getElementById('adult-passcode').addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     this.submitPasscode();
+                }
+            });
+
+            // Add ESC key handler
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    const adultModal = document.getElementById('adult-mode-modal');
+                    if (adultModal && !adultModal.classList.contains('hidden')) {
+                        this.hideAdultModal();
+                    }
+                }
+            });
+
+            // Add click outside to close
+            document.getElementById('adult-mode-modal').addEventListener('click', (e) => {
+                if (e.target.id === 'adult-mode-modal') {
+                    this.hideAdultModal();
                 }
             });
         } else {
