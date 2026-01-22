@@ -154,16 +154,16 @@ class OllamaService:
         return False
 
     async def supports_tools(self, model_name: str) -> bool:
-        """Check if a model supports function/tool calling"""
+        """Check if a model supports function/tool calling.
+
+        Only trusts the official 'capabilities' array from Ollama API.
+        Template heuristics are unreliable and lead to false positives.
+        """
         info = await self.get_model_capabilities(model_name)
 
-        # Check capabilities array from Ollama API
-        if "tools" in info["capabilities"]:
-            return True
-
-        # Fallback: check template for tool-related syntax
-        template = info["template"].lower()
-        if any(kw in template for kw in ['tool', 'function', '<tools>', '<<tool']):
+        # Only trust the official capabilities array from Ollama API
+        # Template-based heuristics are unreliable (e.g., "function" is too generic)
+        if "tools" in info.get("capabilities", []):
             return True
 
         return False
