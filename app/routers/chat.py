@@ -381,6 +381,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         # === Load User Profile ===
         profile_service = get_user_profile_service()
         profile_context = None
+        full_unlock_active = False  # Track if adult sections are unlocked for unanswered questions
         try:
             # Base sections always loaded
             sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
@@ -396,7 +397,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             session_unlock_status = await profile_service.get_session_unlock_status(user.id, session_id) if session_id else {"enabled": False}
 
             # Both Tier 1 (adult_mode) AND session unlock required for adult sections
-            if adult_status.get("enabled") and session_unlock_status.get("enabled"):
+            full_unlock_active = adult_status.get("enabled") and session_unlock_status.get("enabled")
+            if full_unlock_active:
                 sections_to_load.extend(["sexual_romantic", "dark_content", "private_self", "substances_health"])
                 logger.debug("Session unlock enabled - including sensitive sections in prompt")
 
@@ -458,7 +460,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             profile_context=profile_context,
             user_name=user_name,
             has_tools=supports_tools,
-            has_vision=is_vision
+            has_vision=is_vision,
+            full_unlock_enabled=full_unlock_active
         )
 
         # Build messages with memory-enhanced system prompt
@@ -521,6 +524,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
 
             # Track if we're in thinking mode
             is_thinking = False
+            thinking_token_count = 0
             logger.debug(f"Starting stream with think={chat_request.think}")
 
             # Stream from Ollama - track for cleanup
@@ -541,11 +545,16 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                     # Stream thinking tokens if present
                     if msg.get("thinking"):
                         is_thinking = True
+                        thinking_token_count += 1
                         collected_thinking += msg["thinking"]  # Collect for storage
                         yield {
                             "event": "token",
                             "data": json.dumps({"thinking": msg["thinking"]})
                         }
+                        # Safety: if thinking goes on too long without content, break
+                        if thinking_token_count > 3000:
+                            logger.warning(f"Thinking limit reached ({thinking_token_count} tokens) without content, breaking")
+                            break
 
                     # Stream content tokens
                     if msg.get("content"):
@@ -574,6 +583,16 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             "data": json.dumps({"thinking_done": True})
                         }
                     break
+
+            # Safety: If we had thinking but no content and no tool calls, send a fallback
+            if collected_thinking and not collected_content and not tool_calls:
+                logger.warning("Model produced thinking but no content - sending fallback response")
+                fallback_msg = "I apologize, but I wasn't able to formulate a response. Could you please rephrase your question?"
+                collected_content = fallback_msg
+                yield {
+                    "event": "token",
+                    "data": json.dumps({"content": fallback_msg})
+                }
 
             # If no native tool_calls, try parsing text-based function calls
             if not tool_calls and collected_content:
@@ -694,6 +713,15 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                         await followup_stream.aclose()
                     except Exception:
                         pass
+
+                # Safety: If no content after tool call, send a fallback
+                if not followup_content:
+                    logger.warning("No content in follow-up response after tool call - sending fallback")
+                    followup_content = "I retrieved the information, but couldn't formulate a response. Please try rephrasing your question."
+                    yield {
+                        "event": "token",
+                        "data": json.dumps({"content": followup_content})
+                    }
 
                 # Add follow-up to conversation
                 if followup_content:
@@ -945,6 +973,7 @@ async def regenerate_response(
         # === Load User Profile ===
         profile_service = get_user_profile_service()
         profile_context = None
+        full_unlock_active = False  # Track if adult sections are unlocked
         try:
             # Base sections always loaded
             sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
@@ -959,7 +988,8 @@ async def regenerate_response(
             session_unlock_status = await profile_service.get_session_unlock_status(user.id, session_id) if session_id else {"enabled": False}
 
             # Both Tier 1 (adult_mode) AND session unlock required for adult sections
-            if adult_status.get("enabled") and session_unlock_status.get("enabled"):
+            full_unlock_active = adult_status.get("enabled") and session_unlock_status.get("enabled")
+            if full_unlock_active:
                 sections_to_load.extend(["sexual_romantic", "dark_content", "private_self", "substances_health"])
                 logger.debug("Regenerate: Session unlock enabled - including sensitive sections")
 
@@ -1020,7 +1050,8 @@ async def regenerate_response(
             profile_context=profile_context,
             user_name=user_name,
             has_tools=supports_tools,
-            has_vision=is_vision
+            has_vision=is_vision,
+            full_unlock_enabled=full_unlock_active
         )
 
         # Build messages with memory-enhanced system prompt
