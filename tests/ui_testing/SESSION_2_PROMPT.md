@@ -20,7 +20,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is ME
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session2/agent1_messaging/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_msg1_{timestamp}
 
 INVESTIGATION TASKS - Screenshot everything:
@@ -129,7 +129,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is ST
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session2/agent2_streaming/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_stream2_{timestamp}
 
 INVESTIGATION TASKS - Screenshot everything:
@@ -219,7 +219,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is ME
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session2/agent3_edit_fork/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_edit3_{timestamp}
 
 INVESTIGATION TASKS - Screenshot everything:
@@ -318,7 +318,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is FI
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session2/agent4_attachments/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_attach4_{timestamp}
 4. Create test files:
    - test_image.png (any small image)
@@ -425,7 +425,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is TH
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session2/agent5_thinking/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_think5_{timestamp}
 
 INVESTIGATION TASKS - Screenshot everything:
@@ -540,5 +540,5 @@ Each agent should:
 - Document findings in their agent directory
 - Focus on INVESTIGATION, not fixes
 
-The app is running at http://localhost:8000
+The app is running at http://localhost:8080
 ```

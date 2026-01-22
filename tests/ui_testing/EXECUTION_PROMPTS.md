@@ -11,7 +11,7 @@ Each session spawns 5 parallel agents.
 ```
 I need you to run 5 Playwright UI testing agents in parallel for PeanutChat.
 
-App URL: http://localhost:8000
+App URL: http://localhost:8080
 Base directory: /home/user/PeanutChat
 
 CRITICAL RULES FOR ALL AGENTS:
@@ -60,7 +60,7 @@ Test: Model dropdown (#model-select), Capability icons (#cap-tools, #cap-vision,
 ```
 I need you to run 5 Playwright UI testing agents in parallel for PeanutChat.
 
-App URL: http://localhost:8000
+App URL: http://localhost:8080
 Base directory: /home/user/PeanutChat
 
 CRITICAL RULES FOR ALL AGENTS:
@@ -109,7 +109,7 @@ Test: Thinking toggle (#thinking-checkbox in tools menu), Mode indicator when en
 ```
 I need you to run 5 Playwright UI testing agents in parallel for PeanutChat.
 
-App URL: http://localhost:8000
+App URL: http://localhost:8080
 Base directory: /home/user/PeanutChat
 
 CRITICAL RULES FOR ALL AGENTS:
@@ -158,7 +158,7 @@ Test: Model Parameters section with 5 sliders: Temperature (#temperature, 0-2), 
 ```
 I need you to run 5 Playwright UI testing agents in parallel for PeanutChat.
 
-App URL: http://localhost:8000
+App URL: http://localhost:8080
 Base directory: /home/user/PeanutChat
 
 CRITICAL RULES FOR ALL AGENTS:

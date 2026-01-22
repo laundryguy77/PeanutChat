@@ -28,7 +28,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is AU
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session1/agent1_auth/
 2. Install playwright if needed: pip install playwright && playwright install chromium
-3. App URL: http://localhost:8000
+3. App URL: http://localhost:8080
 
 INVESTIGATION TASKS - Screenshot everything:
 
@@ -94,7 +94,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is SI
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session1/agent2_sidebar/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_sidebar2_{timestamp}
 
 INVESTIGATION TASKS - Screenshot everything:
@@ -165,7 +165,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is TH
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session1/agent3_themes/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_theme3_{timestamp}
 
 INVESTIGATION TASKS - Screenshot everything:
@@ -248,7 +248,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is SE
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session1/agent4_settings/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_settings4_{timestamp}
 
 INVESTIGATION TASKS - Screenshot everything:
@@ -344,7 +344,7 @@ You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is MO
 
 SETUP:
 1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session1/agent5_models/
-2. App URL: http://localhost:8000
+2. App URL: http://localhost:8080
 3. Create unique test user: testuser_models5_{timestamp}
 
 INVESTIGATION TASKS - Screenshot everything:
@@ -453,5 +453,5 @@ Each agent should:
 - Document findings in their agent directory
 - Focus on INVESTIGATION, not fixes
 
-The app is running at http://localhost:8000
+The app is running at http://localhost:8080
 ```
