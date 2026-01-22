@@ -41,6 +41,7 @@ def parse_text_function_calls(content: str) -> List[Dict]:
     Some models output function calls as text in various formats:
     - {"function_call": {"name": "...", "arguments": {...}}}
     - {"name": "...", "arguments": {...}}
+    - [TOOL CALL] function_name("arg") or [TOOL CALL] function_name(key=value)
 
     Returns list of tool_calls in Ollama format.
     """
@@ -77,6 +78,36 @@ def parse_text_function_calls(content: str) -> List[Dict]:
                     })
             except json.JSONDecodeError:
                 continue
+
+    # Pattern for [TOOL CALL] function_name("arg") or [TOOL CALL] function_name(key=value, ...)
+    # This catches models that output tool calls as readable text
+    tool_call_text_pattern = r'\[TOOL\s*CALL\]\s*(\w+)\s*\(([^)]*)\)'
+    text_matches = re.findall(tool_call_text_pattern, content, re.IGNORECASE)
+    for func_name, args_str in text_matches:
+        # Parse the arguments
+        arguments = {}
+        if args_str.strip():
+            # Try to parse as key=value pairs first
+            kv_pattern = r'(\w+)\s*[=:]\s*["\']?([^"\',$]+)["\']?'
+            kv_matches = re.findall(kv_pattern, args_str)
+            if kv_matches:
+                for key, value in kv_matches:
+                    arguments[key.strip()] = value.strip()
+            else:
+                # Treat as a single query argument
+                # Remove surrounding quotes if present
+                query = args_str.strip().strip('"\'')
+                if query:
+                    arguments["query"] = query
+
+        if func_name:
+            tool_calls.append({
+                "function": {
+                    "name": func_name,
+                    "arguments": arguments
+                }
+            })
+            logger.debug(f"Parsed text-based tool call: {func_name}({arguments})")
 
     return tool_calls
 
