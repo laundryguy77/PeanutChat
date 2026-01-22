@@ -358,10 +358,11 @@ Use this information to personalize your responses. Don't explicitly mention "ac
         # Profile instructions (when tools available)
         if has_tools:
             sections.append(self.PROFILE_INSTRUCTIONS)
-
-        # Tool instructions
-        if has_tools:
             sections.append(self.TOOL_INSTRUCTIONS)
+        else:
+            # For non-tool models, include structured profile update instructions
+            from app.services.profile_extractor import get_non_tool_profile_instructions
+            sections.append(get_non_tool_profile_instructions())
 
         # Vision note
         if has_vision:

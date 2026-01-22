@@ -495,6 +495,14 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             full_unlock_enabled=full_unlock_active
         )
 
+        # Log system prompt stats for debugging
+        prompt_lines = system_prompt.count('\n')
+        prompt_chars = len(system_prompt)
+        logger.info(f"[SystemPrompt] {prompt_chars} chars, {prompt_lines} lines, tools={supports_tools}, vision={is_vision}, full_unlock={full_unlock_active}")
+        if profile_context:
+            populated_sections = [k for k, v in profile_context.items() if v and isinstance(v, dict) and any(v.values())]
+            logger.debug(f"[Profile] Populated sections: {populated_sections}")
+
         # Build messages with memory-enhanced system prompt
         messages = ollama_service.build_messages_with_system(
             system_prompt=system_prompt,
@@ -792,6 +800,21 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                                 "role": "assistant"
                             })
                         }
+
+                    # For non-tool models, extract profile updates from the response
+                    if not supports_tools and collected_content:
+                        try:
+                            from app.services.profile_extractor import extract_profile_updates
+                            profile_updates = extract_profile_updates(collected_content, chat_request.message)
+                            if profile_updates:
+                                logger.info(f"Extracted {len(profile_updates)} profile updates from non-tool model response")
+                                await profile_service.update_profile(
+                                    user.id,
+                                    profile_updates,
+                                    reason="Extracted from conversation (non-tool model)"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Profile extraction failed: {e}")
 
             # === Trigger Evaluation if Needed ===
             try:
