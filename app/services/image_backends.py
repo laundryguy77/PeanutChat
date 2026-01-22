@@ -275,7 +275,7 @@ class ImageToImageBackend(GradioAutomation, ImageGeneratorBackend):
             # Upload source image
             logger.debug("Uploading source image...")
             await self.upload_image(page, image_path, index=0)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(4000)
 
             # Fill prompt
             logger.debug("Entering prompt...")
@@ -414,12 +414,12 @@ class InpaintingBackend(GradioAutomation, ImageGeneratorBackend):
             # Upload source image
             logger.debug("Uploading source image...")
             await self.upload_image(page, image_path, index=0)
-            await page.wait_for_timeout(1500)
-            
+            await page.wait_for_timeout(3000)
+
             # Upload mask
             logger.debug("Uploading mask...")
             await self.upload_image(page, mask_path, index=1)
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(3000)
             
             # Fill prompt
             logger.debug("Entering prompt...")
@@ -533,7 +533,7 @@ class UpscaleBackend(GradioAutomation, ImageGeneratorBackend):
             # Upload image
             logger.debug("Uploading image...")
             await self.upload_image(page, image_path, index=0)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(4000)
             
             # Try to set scale
             try:
@@ -613,7 +613,7 @@ class UnifiedImageGenerator:
         inpainting_url: Optional[str] = None,
         upscale_url: Optional[str] = None,
         headless: bool = True,
-        timeout: int = 180000
+        timeout: int = 300000  # 5 minutes (increased for multiple model calls)
     ):
         self.headless = headless
         self.timeout = timeout

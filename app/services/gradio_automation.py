@@ -102,7 +102,7 @@ class GradioAutomation:
         space_url: str,
         browser_path: Optional[str] = None,
         headless: bool = True,
-        timeout: int = 180000  # 3 minutes default for image gen
+        timeout: int = 300000  # 5 minutes default for image gen (increased for multiple model calls)
     ):
         self.space_url = space_url
         self.browser_path = browser_path
@@ -167,12 +167,12 @@ class GradioAutomation:
             viewport={"width": 1920, "height": 1080}
         )
     
-    async def wait_for_gradio_load(self, page: Page, timeout: int = 60000):
+    async def wait_for_gradio_load(self, page: Page, timeout: int = 120000):
         """Wait for Gradio interface to fully load."""
         await page.wait_for_selector(".gradio-container", timeout=timeout)
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)  # Increased wait for slow-loading spaces
         try:
-            await page.wait_for_selector(".loading", state="hidden", timeout=5000)
+            await page.wait_for_selector(".loading", state="hidden", timeout=10000)
         except Exception:
             pass
     
@@ -190,17 +190,17 @@ class GradioAutomation:
         for selector in popup_selectors:
             try:
                 btn = page.locator(selector).first
-                if await btn.is_visible(timeout=1000):
+                if await btn.is_visible(timeout=3000):
                     await btn.click()
-                    await page.wait_for_timeout(500)
+                    await page.wait_for_timeout(1000)
             except Exception:
                 pass
             
-    async def fill_textbox(self, page: Page, text: str, label: Optional[str] = None, 
+    async def fill_textbox(self, page: Page, text: str, label: Optional[str] = None,
                           placeholder: Optional[str] = None, index: int = 0):
         """
         Fill a Gradio textbox component.
-        
+
         Args:
             page: Playwright page
             text: Text to enter
@@ -210,7 +210,7 @@ class GradioAutomation:
         """
         # Simple direct approach - find all text inputs and use index
         textbox = page.locator("textarea, input[type='text']").nth(index)
-        await textbox.fill(text, timeout=10000)
+        await textbox.fill(text, timeout=20000)
         
     async def upload_image(self, page: Page, file_path: str, label: Optional[str] = None, index: int = 0):
         """
@@ -238,7 +238,7 @@ class GradioAutomation:
                 file_input = page.locator("input[type='file']").nth(index)
         
         await file_input.set_input_files(file_path)
-        await page.wait_for_timeout(2000)  # Wait for upload processing
+        await page.wait_for_timeout(4000)  # Wait for upload processing (increased for larger files)
         
     async def set_slider(self, page: Page, value: float, label: Optional[str] = None, index: int = 0, timeout: int = 5000):
         """
@@ -328,7 +328,7 @@ class GradioAutomation:
         try:
             await page.wait_for_selector(
                 ".generating, .loading, .progress, [class*='loading'], [class*='progress'], .eta-bar",
-                timeout=10000
+                timeout=20000
             )
         except Exception:
             pass
@@ -350,7 +350,7 @@ class GradioAutomation:
             }''', min_image_size)
 
             if has_output:
-                await page.wait_for_timeout(1000)  # Brief wait for image to fully load
+                await page.wait_for_timeout(2000)  # Wait for image to fully load
                 return
 
             # Check if still loading
@@ -358,7 +358,7 @@ class GradioAutomation:
                 ".generating, .loading:not(.hidden), .progress:not([style*='display: none']), .eta-bar"
             )
             if not loading:
-                await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(3000)
                 # Double-check for output image
                 has_output = await page.evaluate('''(minSize) => {
                     const imgs = document.querySelectorAll('img');
@@ -374,7 +374,7 @@ class GradioAutomation:
                 if has_output:
                     return
                 # No loading indicator and no image yet - keep waiting
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(3000)
         else:
             raise TimeoutError(f"Generation did not complete within {timeout}ms")
             
@@ -460,7 +460,7 @@ class GradioAutomation:
                 count = await images.count()
                 if count > index:
                     img = images.nth(index)
-                    if await img.is_visible(timeout=1000):
+                    if await img.is_visible(timeout=5000):
                         src = await img.get_attribute("src")
                         if src:
                             return await self._fetch_image_data(page, src)
@@ -516,7 +516,7 @@ class GradioAutomation:
             for i in range(count):
                 try:
                     img = gallery_imgs.nth(i)
-                    if await img.is_visible(timeout=500):
+                    if await img.is_visible(timeout=3000):
                         src = await img.get_attribute("src")
                         if src:
                             data = await self._fetch_image_data(page, src)

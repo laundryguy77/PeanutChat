@@ -517,14 +517,18 @@ async def get_system_prompt(
 
     # Check adult mode for full context
     adult_status = await profile_service.get_adult_mode_status(user.id)
+    full_unlock_status = await profile_service.get_full_unlock_status(user.id)
+    full_unlock_enabled = adult_status.get("enabled", False) and full_unlock_status.get("enabled", False)
 
     prompt = builder.build_prompt(
         profile_context=profile,
-        has_tools=True
+        has_tools=True,
+        full_unlock_enabled=full_unlock_enabled
     )
 
     return {
         "success": True,
         "adult_mode": adult_status.get("enabled", False),
+        "full_unlock": full_unlock_enabled,
         "system_prompt": prompt
     }
