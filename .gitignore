@@ -30,3 +30,4 @@ conversations/
 # OS files
 .DS_Store
 Thumbs.db
+tests/ui_testing/old_findings/
