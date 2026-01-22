@@ -29,7 +29,7 @@ class PerchanceGenerator:
         self,
         browser_path: Optional[str] = None,
         headless: bool = True,
-        timeout: int = 120000  # 2 minutes
+        timeout: int = 300000  # 5 minutes (increased for multiple model calls)
     ):
         self.browser_path = browser_path
         self.headless = headless
@@ -122,12 +122,12 @@ class PerchanceGenerator:
             await page.goto(self.GENERATOR_URL, wait_until="networkidle")
             
             # Wait for the page to fully load
-            await page.wait_for_timeout(2000)
-            
+            await page.wait_for_timeout(4000)
+
             # Handle any cookie/consent dialogs
             try:
                 consent_button = page.locator("text=Accept").first
-                if await consent_button.is_visible(timeout=2000):
+                if await consent_button.is_visible(timeout=5000):
                     await consent_button.click()
             except:
                 pass
@@ -150,7 +150,7 @@ class PerchanceGenerator:
             for selector in prompt_selectors:
                 try:
                     elem = page.locator(selector).first
-                    if await elem.is_visible(timeout=1000):
+                    if await elem.is_visible(timeout=5000):
                         prompt_input = elem
                         break
                 except:
@@ -174,7 +174,7 @@ class PerchanceGenerator:
                     ]
                     for selector in neg_selectors:
                         neg_input = page.locator(selector).first
-                        if await neg_input.is_visible(timeout=500):
+                        if await neg_input.is_visible(timeout=3000):
                             await neg_input.fill(negative_prompt)
                             break
                 except:
@@ -190,7 +190,7 @@ class PerchanceGenerator:
                 for option in shape_map.get(shape, []):
                     selector = f'[value="{option}"], [data-value="{option}"], button:has-text("{option}")'
                     shape_btn = page.locator(selector).first
-                    if await shape_btn.is_visible(timeout=500):
+                    if await shape_btn.is_visible(timeout=3000):
                         await shape_btn.click()
                         break
             except:
@@ -209,7 +209,7 @@ class PerchanceGenerator:
             for selector in generate_selectors:
                 try:
                     btn = page.locator(selector).first
-                    if await btn.is_visible(timeout=1000):
+                    if await btn.is_visible(timeout=5000):
                         generate_btn = btn
                         break
                 except:
@@ -234,11 +234,11 @@ class PerchanceGenerator:
             ]
             
             image_elem = None
-            for _ in range(60):  # Wait up to 60 seconds
+            for _ in range(90):  # Wait up to 3 minutes (90 * 2s)
                 for selector in image_selectors:
                     try:
                         img = page.locator(selector).first
-                        if await img.is_visible(timeout=1000):
+                        if await img.is_visible(timeout=3000):
                             src = await img.get_attribute("src")
                             if src and (src.startswith("blob:") or src.startswith("data:") or "perchance" in src):
                                 image_elem = img
@@ -247,7 +247,7 @@ class PerchanceGenerator:
                         continue
                 if image_elem:
                     break
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(2000)
             
             if not image_elem:
                 # Try alternative: take screenshot of the result area

@@ -120,7 +120,7 @@ class HuggingFaceImageToVideo(GradioAutomation, VideoGeneratorBackend):
             # Upload the image
             logger.debug("Uploading image...")
             await self.upload_file(page, image_path, index=0)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(4000)
             
             # Fill in prompts if the space supports them
             if prompt:
@@ -193,9 +193,9 @@ class HuggingFaceImageToVideo(GradioAutomation, VideoGeneratorBackend):
         for selector in popup_selectors:
             try:
                 btn = page.locator(selector).first
-                if await btn.is_visible(timeout=1000):
+                if await btn.is_visible(timeout=3000):
                     await btn.click()
-                    await page.wait_for_timeout(500)
+                    await page.wait_for_timeout(1000)
             except Exception:
                 pass
 
@@ -264,10 +264,10 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
             # Click text-to-video tab if available (LTX-Video has tabs)
             try:
                 tab = page.locator('button[role="tab"]:has-text("text-to-video")')
-                if await tab.is_visible(timeout=2000):
+                if await tab.is_visible(timeout=5000):
                     logger.debug("Clicking text-to-video tab...")
                     await tab.click(force=True)
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(3000)
             except Exception:
                 pass  # Tab may not exist on this space
 
@@ -286,7 +286,7 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
                     ]
                     for selector in neg_selectors:
                         elem = page.locator(selector)
-                        if await elem.is_visible(timeout=1000):
+                        if await elem.is_visible(timeout=3000):
                             await elem.fill(negative_prompt)
                             break
                 except Exception:
@@ -304,7 +304,7 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
             for btn_selector in generate_selectors:
                 try:
                     btn = page.locator(btn_selector).first
-                    if await btn.is_visible(timeout=1000):
+                    if await btn.is_visible(timeout=5000):
                         await btn.click()
                         break
                 except Exception:
@@ -364,9 +364,9 @@ class HuggingFaceTextToVideo(GradioAutomation, VideoGeneratorBackend):
         for selector in popup_selectors:
             try:
                 btn = page.locator(selector).first
-                if await btn.is_visible(timeout=1000):
+                if await btn.is_visible(timeout=3000):
                     await btn.click()
-                    await page.wait_for_timeout(500)
+                    await page.wait_for_timeout(1000)
             except Exception:
                 pass
 
@@ -382,7 +382,7 @@ class VideoGenerator:
         text_to_video_url: Optional[str] = None,
         image_to_video_url: Optional[str] = None,
         headless: bool = True,
-        timeout: int = 300000
+        timeout: int = 480000  # 8 minutes (increased for multiple model calls)
     ):
         self.headless = headless
         self.timeout = timeout

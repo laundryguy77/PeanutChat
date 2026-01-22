@@ -26,7 +26,7 @@ class GradioAutomation:
         space_url: str,
         browser_path: Optional[str] = None,
         headless: bool = True,
-        timeout: int = 180000  # 3 minutes default for image gen
+        timeout: int = 300000  # 5 minutes default for image gen (increased for multiple model calls)
     ):
         self.space_url = space_url
         self.browser_path = browser_path
@@ -91,12 +91,12 @@ class GradioAutomation:
             viewport={"width": 1920, "height": 1080}
         )
     
-    async def wait_for_gradio_load(self, page: Page, timeout: int = 60000):
+    async def wait_for_gradio_load(self, page: Page, timeout: int = 120000):
         """Wait for Gradio interface to fully load."""
         await page.wait_for_selector(".gradio-container", timeout=timeout)
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
         try:
-            await page.wait_for_selector(".loading", state="hidden", timeout=5000)
+            await page.wait_for_selector(".loading", state="hidden", timeout=10000)
         except:
             pass
     
@@ -114,9 +114,9 @@ class GradioAutomation:
         for selector in popup_selectors:
             try:
                 btn = page.locator(selector).first
-                if await btn.is_visible(timeout=1000):
+                if await btn.is_visible(timeout=3000):
                     await btn.click()
-                    await page.wait_for_timeout(500)
+                    await page.wait_for_timeout(1000)
             except:
                 pass
             
@@ -172,7 +172,7 @@ class GradioAutomation:
                 file_input = page.locator("input[type='file']").nth(index)
         
         await file_input.set_input_files(file_path)
-        await page.wait_for_timeout(2000)  # Wait for upload processing
+        await page.wait_for_timeout(4000)  # Wait for upload processing (increased for larger files)
         
     async def set_slider(self, page: Page, value: float, label: Optional[str] = None, index: int = 0):
         """
@@ -193,7 +193,7 @@ class GradioAutomation:
         # Try setting via number input if available
         try:
             number_input = page.locator(f"input[type='number']").nth(index)
-            if await number_input.is_visible(timeout=1000):
+            if await number_input.is_visible(timeout=5000):
                 await number_input.fill(str(value))
                 return
         except:
@@ -256,16 +256,16 @@ class GradioAutomation:
         Watches for loading indicators to appear and then disappear.
         """
         timeout = timeout or self.timeout
-        
+
         # Wait for processing to start
         try:
             await page.wait_for_selector(
                 ".generating, .loading, .progress, [class*='loading'], [class*='progress'], .eta-bar",
-                timeout=10000
+                timeout=20000
             )
         except:
             pass
-        
+
         # Wait for processing to complete
         start_time = asyncio.get_event_loop().time()
         while (asyncio.get_event_loop().time() - start_time) * 1000 < timeout:
@@ -273,11 +273,11 @@ class GradioAutomation:
                 ".generating, .loading:not(.hidden), .progress:not([style*='display: none']), .eta-bar"
             )
             if not loading:
-                await page.wait_for_timeout(1500)
+                await page.wait_for_timeout(3000)
                 loading = await page.query_selector(".generating, .loading:not(.hidden)")
                 if not loading:
                     break
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(3000)
         else:
             raise TimeoutError(f"Generation did not complete within {timeout}ms")
             
@@ -312,13 +312,13 @@ class GradioAutomation:
                 count = await images.count()
                 if count > index:
                     img = images.nth(index)
-                    if await img.is_visible(timeout=1000):
+                    if await img.is_visible(timeout=5000):
                         src = await img.get_attribute("src")
                         if src:
                             return await self._fetch_image_data(page, src)
             except:
                 continue
-        
+
         return None
     
     async def _fetch_image_data(self, page: Page, src: str) -> Optional[bytes]:
@@ -368,7 +368,7 @@ class GradioAutomation:
             for i in range(count):
                 try:
                     img = gallery_imgs.nth(i)
-                    if await img.is_visible(timeout=500):
+                    if await img.is_visible(timeout=3000):
                         src = await img.get_attribute("src")
                         if src:
                             data = await self._fetch_image_data(page, src)
@@ -405,7 +405,7 @@ class GradioAutomation:
     async def click_download_button(self, page: Page, output_path: str) -> dict:
         """Try to download via the download button."""
         try:
-            async with page.expect_download(timeout=10000) as download_info:
+            async with page.expect_download(timeout=30000) as download_info:
                 download_btn = page.locator(
                     "button:has-text('Download'), a:has-text('Download'), [download], "
                     "button[title*='download'], a[title*='download']"

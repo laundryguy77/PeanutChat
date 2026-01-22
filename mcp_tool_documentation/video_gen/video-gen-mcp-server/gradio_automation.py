@@ -27,7 +27,7 @@ class GradioAutomation:
         space_url: str,
         browser_path: Optional[str] = None,
         headless: bool = True,
-        timeout: int = 300000  # 5 minutes default for video gen
+        timeout: int = 480000  # 8 minutes default for video gen (increased for multiple model calls)
     ):
         self.space_url = space_url
         self.browser_path = browser_path
@@ -92,14 +92,14 @@ class GradioAutomation:
             viewport={"width": 1920, "height": 1080}
         )
     
-    async def wait_for_gradio_load(self, page: Page, timeout: int = 60000):
+    async def wait_for_gradio_load(self, page: Page, timeout: int = 120000):
         """Wait for Gradio interface to fully load."""
         # Wait for the Gradio app container
         await page.wait_for_selector(".gradio-container", timeout=timeout)
         # Wait for any loading spinners to disappear
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
         try:
-            await page.wait_for_selector(".loading", state="hidden", timeout=5000)
+            await page.wait_for_selector(".loading", state="hidden", timeout=10000)
         except:
             pass
             
@@ -147,7 +147,7 @@ class GradioAutomation:
         
         await file_input.set_input_files(file_path)
         # Wait for upload to complete
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(4000)
         
     async def click_button(self, page: Page, text: Optional[str] = None, index: int = 0):
         """
@@ -172,16 +172,16 @@ class GradioAutomation:
         Watches for loading indicators to appear and then disappear.
         """
         timeout = timeout or self.timeout
-        
+
         # Wait for processing to start (loading indicator appears)
         try:
             await page.wait_for_selector(
                 ".generating, .loading, .progress, [class*='loading'], [class*='progress']",
-                timeout=10000
+                timeout=20000
             )
         except:
             pass  # May have already started
-        
+
         # Wait for processing to complete
         start_time = asyncio.get_event_loop().time()
         while (asyncio.get_event_loop().time() - start_time) * 1000 < timeout:
@@ -191,11 +191,11 @@ class GradioAutomation:
             )
             if not loading:
                 # Double-check by waiting a moment
-                await page.wait_for_timeout(2000)
+                await page.wait_for_timeout(4000)
                 loading = await page.query_selector(".generating, .loading:not(.hidden)")
                 if not loading:
                     break
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(3000)
         else:
             raise TimeoutError(f"Generation did not complete within {timeout}ms")
             
@@ -218,7 +218,7 @@ class GradioAutomation:
         for selector in selectors:
             try:
                 elem = page.locator(selector).first
-                if await elem.is_visible(timeout=1000):
+                if await elem.is_visible(timeout=5000):
                     # Try src attribute
                     src = await elem.get_attribute("src")
                     if src:
@@ -229,7 +229,7 @@ class GradioAutomation:
                         return href
             except:
                 continue
-        
+
         return None
         
     async def download_output(self, page: Page, output_path: str) -> dict:
@@ -290,7 +290,7 @@ class GradioAutomation:
         
         # Method 2: Try clicking download button
         try:
-            async with page.expect_download(timeout=10000) as download_info:
+            async with page.expect_download(timeout=30000) as download_info:
                 download_btn = page.locator("button:has-text('Download'), a:has-text('Download'), [download]").first
                 await download_btn.click()
             download = await download_info.value
@@ -298,5 +298,5 @@ class GradioAutomation:
             return {"success": True, "path": str(output_path.absolute())}
         except:
             pass
-        
+
         return {"success": False, "error": "Could not find or download output video"}
