@@ -313,9 +313,19 @@ PERSONA:
         user_message: str,
         history: List[Dict[str, Any]],
         images: Optional[List[str]] = None,
-        is_vision_model: bool = True
+        is_vision_model: bool = True,
+        supports_tools: bool = True
     ) -> List[Dict[str, Any]]:
-        """Build messages with an explicit system prompt (no internal generation)."""
+        """Build messages with an explicit system prompt (no internal generation).
+
+        Args:
+            system_prompt: The system prompt to use
+            user_message: Current user message
+            history: Conversation history
+            images: Images to include (only for vision models)
+            is_vision_model: Whether the model supports vision
+            supports_tools: Whether the model supports tool calling
+        """
         messages = []
 
         # Use provided system prompt directly
@@ -324,13 +334,15 @@ PERSONA:
             "content": system_prompt
         })
 
-        # Add conversation history (strip images if not vision model)
+        # Add conversation history
+        # Strip images if not vision model, strip tool_calls if not tool-capable
         for msg in history:
-            if is_vision_model:
-                messages.append(msg)
-            else:
-                clean_msg = {k: v for k, v in msg.items() if k != "images"}
-                messages.append(clean_msg)
+            clean_msg = dict(msg)
+            if not is_vision_model and "images" in clean_msg:
+                del clean_msg["images"]
+            if not supports_tools and "tool_calls" in clean_msg:
+                del clean_msg["tool_calls"]
+            messages.append(clean_msg)
 
         # Add current user message
         user_msg = {"role": "user", "content": user_message}

@@ -501,7 +501,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             user_message=user_message,
             history=history,
             images=chat_request.images if is_vision else None,
-            is_vision_model=is_vision
+            is_vision_model=is_vision,
+            supports_tools=supports_tools
         )
 
         # Add user message to conversation
@@ -1091,7 +1092,8 @@ async def regenerate_response(
             user_message=user_message,
             history=history[:-1] if history else [],  # Exclude the last user message as we'll add it fresh
             images=user_images if is_vision else None,
-            is_vision_model=is_vision
+            is_vision_model=is_vision,
+            supports_tools=supports_tools
         )
 
         # Prepare options
