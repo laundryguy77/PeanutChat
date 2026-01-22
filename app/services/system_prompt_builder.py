@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any, Tuple
 
 
 # Define profile field metadata for intelligent extraction
+# "default" marks values that are system defaults (not user-set) and should be treated as unanswered
 PROFILE_FIELD_METADATA = {
     # Identity fields (always included when populated)
     "identity": {
@@ -14,10 +15,10 @@ PROFILE_FIELD_METADATA = {
     },
     # Communication preferences
     "communication": {
-        "conversation_style": {"label": "Conversation style", "question": "How do you prefer I communicate with you - casual, professional, or something else?"},
-        "response_length": {"label": "Response length", "question": "Do you prefer brief or detailed responses?"},
-        "humor_tolerance": {"label": "Humor level", "question": "How much humor do you enjoy in our conversations?"},
-        "profanity_comfort": {"label": "Profanity comfort", "question": "Are you comfortable with profanity, or should I keep things clean?"},
+        "conversation_style": {"label": "Conversation style", "question": "How do you prefer I communicate with you - casual, professional, or something else?", "default": "candid_direct"},
+        "response_length": {"label": "Response length", "question": "Do you prefer brief or detailed responses?", "default": "adaptive"},
+        "humor_tolerance": {"label": "Humor level", "question": "How much humor do you enjoy in our conversations?", "default": "moderate"},
+        "profanity_comfort": {"label": "Profanity comfort", "question": "Are you comfortable with profanity, or should I keep things clean?", "default": "none"},
     },
     # Technical preferences
     "technical": {
@@ -28,8 +29,8 @@ PROFILE_FIELD_METADATA = {
     # Persona preferences
     "persona_preferences": {
         "assistant_name": {"label": "My name", "question": "Is there a name you'd like to call me?"},
-        "assistant_personality_archetype": {"label": "Personality", "question": "What kind of personality would you like me to have?"},
-        "formality_level": {"label": "Formality", "question": "How formal should I be with you?"},
+        "assistant_personality_archetype": {"label": "Personality", "question": "What kind of personality would you like me to have?", "default": "competent_peer"},
+        "formality_level": {"label": "Formality", "question": "How formal should I be with you?", "default": "casual"},
     },
     # Boundaries - important for safety
     "boundaries": {
@@ -50,12 +51,12 @@ PROFILE_FIELD_METADATA = {
     "sexual_romantic": {
         "orientation": {"label": "Orientation", "question": "What's your orientation?", "adult": True},
         "ai_interaction_interest": {"label": "AI interaction interest", "question": "What level of romantic/intimate interaction are you interested in?", "adult": True},
-        "explicit_content_formatting": {"label": "Explicit level", "question": "How explicit would you like intimate content to be?", "adult": True},
+        "explicit_content_formatting": {"label": "Explicit level", "question": "How explicit would you like intimate content to be?", "adult": True, "default": "fade_to_black"},
         "fantasy_scenarios": {"label": "Fantasy scenarios", "question": "Any particular fantasies or scenarios you'd like to explore?", "adult": True},
     },
     "dark_content": {
-        "violence_tolerance": {"label": "Violence tolerance", "question": "What's your tolerance for violent content in fiction?", "adult": True},
-        "dark_humor_tolerance": {"label": "Dark humor", "question": "How do you feel about dark humor?", "adult": True},
+        "violence_tolerance": {"label": "Violence tolerance", "question": "What's your tolerance for violent content in fiction?", "adult": True, "default": "minimal"},
+        "dark_humor_tolerance": {"label": "Dark humor", "question": "How do you feel about dark humor?", "adult": True, "default": "minimal"},
     },
     "private_self": {
         "attachment_style": {"label": "Attachment style", "question": "How would you describe your attachment style in relationships?", "adult": True},
@@ -105,11 +106,14 @@ def get_unanswered_profile_fields(
             if meta.get("adult") and not full_unlock_enabled:
                 continue
 
-            # Check if field is unanswered
+            # Check if field is unanswered (including default values)
             value = section_data.get(field)
+            default_value = meta.get("default")
+
             is_unanswered = (
                 value is None or
                 value == "" or
+                value == default_value or  # Default values count as unanswered
                 (isinstance(value, list) and len(value) == 0) or
                 (isinstance(value, dict) and not any(value.values()))
             )
