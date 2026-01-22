@@ -1,6 +1,148 @@
 """Centralized system prompt construction with memory, profile, and tool instructions."""
 import re
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
+
+
+# Define profile field metadata for intelligent extraction
+# "default" marks values that are system defaults (not user-set) and should be treated as unanswered
+PROFILE_FIELD_METADATA = {
+    # Identity fields (always included when populated)
+    "identity": {
+        "preferred_name": {"label": "Name", "question": "What should I call you?"},
+        "timezone": {"label": "Timezone", "question": "What timezone are you in?"},
+        "city": {"label": "Location", "question": "Where are you located?"},
+        "pronouns": {"label": "Pronouns", "question": "What pronouns do you use?"},
+    },
+    # Communication preferences
+    "communication": {
+        "conversation_style": {"label": "Conversation style", "question": "How do you prefer I communicate with you - casual, professional, or something else?", "default": "candid_direct"},
+        "response_length": {"label": "Response length", "question": "Do you prefer brief or detailed responses?", "default": "adaptive"},
+        "humor_tolerance": {"label": "Humor level", "question": "How much humor do you enjoy in our conversations?", "default": "moderate"},
+        "profanity_comfort": {"label": "Profanity comfort", "question": "Are you comfortable with profanity, or should I keep things clean?", "default": "none"},
+    },
+    # Technical preferences
+    "technical": {
+        "primary_languages": {"label": "Programming languages", "question": "What programming languages do you work with?"},
+        "skill_level": {"label": "Technical skill", "question": "How would you describe your technical skill level?"},
+        "os_preference": {"label": "OS preference", "question": "What operating system do you primarily use?"},
+    },
+    # Persona preferences
+    "persona_preferences": {
+        "assistant_name": {"label": "My name", "question": "Is there a name you'd like to call me?"},
+        "assistant_personality_archetype": {"label": "Personality", "question": "What kind of personality would you like me to have?", "default": "competent_peer"},
+        "formality_level": {"label": "Formality", "question": "How formal should I be with you?", "default": "casual"},
+    },
+    # Boundaries - important for safety
+    "boundaries": {
+        "hard_boundaries": {"label": "Hard boundaries", "question": "Are there any topics I should absolutely avoid?"},
+        "sensitive_topics": {"label": "Sensitive topics", "question": "Any topics I should approach carefully?"},
+    },
+    # Pet peeves - important for satisfaction
+    "pet_peeves": {
+        "responses": {"label": "Response pet peeves", "question": "Any response styles that annoy you?"},
+        "behavior": {"label": "Behavior pet peeves", "question": "Any AI behaviors you find frustrating?"},
+    },
+    # Work context
+    "work_context": {
+        "industry": {"label": "Industry", "question": "What industry do you work in?"},
+        "role": {"label": "Role", "question": "What's your job role?"},
+    },
+    # Adult sections (only when full_unlock enabled)
+    "sexual_romantic": {
+        "orientation": {"label": "Orientation", "question": "What's your orientation?", "adult": True},
+        "ai_interaction_interest": {"label": "AI interaction interest", "question": "What level of romantic/intimate interaction are you interested in?", "adult": True},
+        "explicit_content_formatting": {"label": "Explicit level", "question": "How explicit would you like intimate content to be?", "adult": True, "default": "fade_to_black"},
+        "fantasy_scenarios": {"label": "Fantasy scenarios", "question": "Any particular fantasies or scenarios you'd like to explore?", "adult": True},
+    },
+    "dark_content": {
+        "violence_tolerance": {"label": "Violence tolerance", "question": "What's your tolerance for violent content in fiction?", "adult": True, "default": "minimal"},
+        "dark_humor_tolerance": {"label": "Dark humor", "question": "How do you feel about dark humor?", "adult": True, "default": "minimal"},
+    },
+    "private_self": {
+        "attachment_style": {"label": "Attachment style", "question": "How would you describe your attachment style in relationships?", "adult": True},
+        "coping_mechanisms": {"label": "Coping mechanisms", "question": "What coping mechanisms do you use when stressed?", "adult": True},
+    },
+}
+
+
+def get_unanswered_profile_fields(
+    profile: Dict[str, Any],
+    full_unlock_enabled: bool = False,
+    max_fields: int = 5
+) -> List[Dict[str, str]]:
+    """Get a list of unanswered profile fields for the model to naturally ask about.
+
+    Args:
+        profile: The user's profile data
+        full_unlock_enabled: Whether adult sections are unlocked
+        max_fields: Maximum number of unanswered fields to return
+
+    Returns:
+        List of dicts with 'section', 'field', 'question' keys
+    """
+    unanswered = []
+
+    # Priority order: adult sections first if unlocked, then core sections
+    if full_unlock_enabled:
+        section_priority = [
+            "sexual_romantic", "dark_content", "private_self",  # Adult first
+            "identity", "communication", "persona_preferences",
+            "boundaries", "pet_peeves", "technical", "work_context"
+        ]
+    else:
+        section_priority = [
+            "identity", "communication", "persona_preferences",
+            "boundaries", "pet_peeves", "technical", "work_context"
+        ]
+
+    for section in section_priority:
+        if section not in PROFILE_FIELD_METADATA:
+            continue
+
+        section_data = profile.get(section, {})
+
+        # Skip adult sections if not unlocked
+        for field, meta in PROFILE_FIELD_METADATA[section].items():
+            if meta.get("adult") and not full_unlock_enabled:
+                continue
+
+            # Check if field is unanswered (including default values)
+            value = section_data.get(field)
+            default_value = meta.get("default")
+
+            is_unanswered = (
+                value is None or
+                value == "" or
+                value == default_value or  # Default values count as unanswered
+                (isinstance(value, list) and len(value) == 0) or
+                (isinstance(value, dict) and not any(value.values()))
+            )
+
+            if is_unanswered:
+                unanswered.append({
+                    "section": section,
+                    "field": field,
+                    "question": meta["question"],
+                    "is_adult": meta.get("adult", False)
+                })
+
+                if len(unanswered) >= max_fields:
+                    return unanswered
+
+    return unanswered
+
+
+def is_field_populated(value: Any) -> bool:
+    """Check if a field has a meaningful value."""
+    if value is None:
+        return False
+    if isinstance(value, str) and value.strip() == "":
+        return False
+    if isinstance(value, list) and len(value) == 0:
+        return False
+    if isinstance(value, dict) and not any(is_field_populated(v) for v in value.values()):
+        return False
+    return True
 
 
 def sanitize_prompt_content(content: str, max_length: int = 2000) -> str:
@@ -163,9 +305,20 @@ You have access to a comprehensive user profile system. Use it to personalize yo
         profile_context: Optional[Dict[str, Any]] = None,
         user_name: Optional[str] = None,
         has_tools: bool = True,
-        has_vision: bool = False
+        has_vision: bool = False,
+        full_unlock_enabled: bool = False
     ) -> str:
-        """Build the complete system prompt."""
+        """Build the complete system prompt.
+
+        Args:
+            persona: Custom persona text
+            memory_context: Retrieved memories about the user
+            profile_context: User profile data
+            user_name: User's name from memory
+            has_tools: Whether the model supports tools
+            has_vision: Whether the model supports vision
+            full_unlock_enabled: Whether adult content sections are unlocked
+        """
         sections = []
 
         # Base identity
@@ -188,7 +341,7 @@ You have access to a comprehensive user profile system. Use it to personalize yo
 
         # Profile context - add before memory for priority
         if profile_context:
-            profile_str = self._format_profile_context(profile_context)
+            profile_str = self._format_profile_context(profile_context, full_unlock_enabled)
             sections.append(profile_str)
 
         # Memory context
@@ -205,10 +358,11 @@ Use this information to personalize your responses. Don't explicitly mention "ac
         # Profile instructions (when tools available)
         if has_tools:
             sections.append(self.PROFILE_INSTRUCTIONS)
-
-        # Tool instructions
-        if has_tools:
             sections.append(self.TOOL_INSTRUCTIONS)
+        else:
+            # For non-tool models, include structured profile update instructions
+            from app.services.profile_extractor import get_non_tool_profile_instructions
+            sections.append(get_non_tool_profile_instructions())
 
         # Vision note
         if has_vision:
@@ -225,48 +379,76 @@ Use this information to personalize your responses. Don't explicitly mention "ac
 
         return "\n".join(sections)
 
-    def _format_profile_context(self, profile: Dict[str, Any]) -> str:
+    def _format_profile_context(
+        self,
+        profile: Dict[str, Any],
+        full_unlock_enabled: bool = False
+    ) -> str:
         """Format profile data for inclusion in system prompt.
 
+        Only includes fields that have actual values (not null/empty).
+        Adds a list of unanswered areas for the model to naturally explore.
         All user-provided data is sanitized to prevent prompt injection.
+
+        Args:
+            profile: The user's profile data
+            full_unlock_enabled: Whether adult sections are accessible
         """
         lines = ["\n## USER PROFILE CONTEXT\n"]
+        lines.append("*Only populated profile areas are shown below.*\n")
 
         # Identity - sanitize user-controlled fields
         identity = profile.get("identity", {})
+        identity_items = []
         if identity.get("preferred_name"):
             # Names should be simple - strict sanitization
             name = sanitize_prompt_content(str(identity['preferred_name']), max_length=50)
-            lines.append(f"**Name**: {name}")
+            identity_items.append(f"**Name**: {name}")
         if identity.get("timezone"):
             # Timezone should match a pattern
             tz = str(identity.get('timezone', ''))[:50]
             if re.match(r'^[A-Za-z_/+-]+$', tz):
-                lines.append(f"**Timezone**: {tz}")
+                identity_items.append(f"**Timezone**: {tz}")
+        if identity.get("pronouns"):
+            pronouns = sanitize_prompt_content(str(identity['pronouns']), max_length=30)
+            identity_items.append(f"**Pronouns**: {pronouns}")
+        if identity.get("city"):
+            city = sanitize_prompt_content(str(identity['city']), max_length=50)
+            identity_items.append(f"**Location**: {city}")
+
+        if identity_items:
+            lines.extend(identity_items)
 
         # Communication preferences - use allowlists for enum-like fields
         comm = profile.get("communication", {})
-        if comm:
-            lines.append("\n**Communication Preferences:**")
-            # Allowlisted values for enum fields
-            style = comm.get("conversation_style", "")
-            if style in ("casual", "professional", "friendly", "formal", "playful"):
-                lines.append(f"  - Style: {style}")
-            length = comm.get("response_length", "")
-            if length in ("brief", "moderate", "detailed", "verbose"):
-                lines.append(f"  - Length: {length}")
-            humor = comm.get("humor_tolerance", "")
+        comm_items = []
+        # Allowlisted values for enum fields
+        style = comm.get("conversation_style", "")
+        if style and style not in ("", "candid_direct"):  # candid_direct is default
+            if style in ("casual", "professional", "friendly", "formal", "playful", "candid_direct"):
+                comm_items.append(f"  - Style: {style}")
+        length = comm.get("response_length", "")
+        if length and length != "adaptive":  # adaptive is default
+            if length in ("brief", "moderate", "detailed", "verbose", "adaptive"):
+                comm_items.append(f"  - Length: {length}")
+        humor = comm.get("humor_tolerance", "")
+        if humor and humor != "moderate":  # moderate is default
             if humor in ("none", "light", "moderate", "heavy", "any"):
-                lines.append(f"  - Humor: {humor}")
-            profanity = comm.get("profanity_comfort", "")
+                comm_items.append(f"  - Humor: {humor}")
+        profanity = comm.get("profanity_comfort", "")
+        if profanity and profanity != "none":  # none is default
             if profanity in ("none", "mild", "moderate", "any"):
-                lines.append(f"  - Profanity: {profanity}")
+                comm_items.append(f"  - Profanity: {profanity}")
+
+        if comm_items:
+            lines.append("\n**Communication Preferences:**")
+            lines.extend(comm_items)
 
         # Pet peeves - critical for avoidance (sanitize user input)
         pet_peeves = profile.get("pet_peeves", {})
         all_peeves = []
         for category, items in pet_peeves.items():
-            if isinstance(items, list):
+            if isinstance(items, list) and items:  # Only include non-empty lists
                 all_peeves.extend(items)
         if all_peeves:
             lines.append("\n**AVOID (Pet Peeves):**")
@@ -414,6 +596,15 @@ Use this information to personalize your responses. Don't explicitly mention "ac
             lecture_tolerance = health.get("lecture_tolerance", "")
             if lecture_tolerance in ("none", "minimal", "moderate", "welcome"):
                 lines.append(f"**Lecture Tolerance**: {lecture_tolerance}")
+
+        # === UNANSWERED PROFILE AREAS ===
+        # Give the model natural conversation hooks to learn more about the user
+        unanswered = get_unanswered_profile_fields(profile, full_unlock_enabled, max_fields=5)
+        if unanswered:
+            lines.append("\n## PROFILE AREAS TO EXPLORE")
+            lines.append("*The following areas are not yet filled in. Naturally weave these questions into conversation when appropriate (don't interrogate - be conversational):*\n")
+            for i, item in enumerate(unanswered, 1):
+                lines.append(f"{i}. {item['question']}")
 
         return "\n".join(lines)
 

@@ -41,6 +41,7 @@ def parse_text_function_calls(content: str) -> List[Dict]:
     Some models output function calls as text in various formats:
     - {"function_call": {"name": "...", "arguments": {...}}}
     - {"name": "...", "arguments": {...}}
+    - [TOOL CALL] function_name("arg") or [TOOL CALL] function_name(key=value)
 
     Returns list of tool_calls in Ollama format.
     """
@@ -77,6 +78,36 @@ def parse_text_function_calls(content: str) -> List[Dict]:
                     })
             except json.JSONDecodeError:
                 continue
+
+    # Pattern for [TOOL CALL] function_name("arg") or [TOOL CALL] function_name(key=value, ...)
+    # This catches models that output tool calls as readable text
+    tool_call_text_pattern = r'\[TOOL\s*CALL\]\s*(\w+)\s*\(([^)]*)\)'
+    text_matches = re.findall(tool_call_text_pattern, content, re.IGNORECASE)
+    for func_name, args_str in text_matches:
+        # Parse the arguments
+        arguments = {}
+        if args_str.strip():
+            # Try to parse as key=value pairs first
+            kv_pattern = r'(\w+)\s*[=:]\s*["\']?([^"\',$]+)["\']?'
+            kv_matches = re.findall(kv_pattern, args_str)
+            if kv_matches:
+                for key, value in kv_matches:
+                    arguments[key.strip()] = value.strip()
+            else:
+                # Treat as a single query argument
+                # Remove surrounding quotes if present
+                query = args_str.strip().strip('"\'')
+                if query:
+                    arguments["query"] = query
+
+        if func_name:
+            tool_calls.append({
+                "function": {
+                    "name": func_name,
+                    "arguments": arguments
+                }
+            })
+            logger.debug(f"Parsed text-based tool call: {func_name}({arguments})")
 
     return tool_calls
 
@@ -381,6 +412,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         # === Load User Profile ===
         profile_service = get_user_profile_service()
         profile_context = None
+        full_unlock_active = False  # Track if adult sections are unlocked for unanswered questions
         try:
             # Base sections always loaded
             sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
@@ -396,7 +428,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             session_unlock_status = await profile_service.get_session_unlock_status(user.id, session_id) if session_id else {"enabled": False}
 
             # Both Tier 1 (adult_mode) AND session unlock required for adult sections
-            if adult_status.get("enabled") and session_unlock_status.get("enabled"):
+            full_unlock_active = adult_status.get("enabled") and session_unlock_status.get("enabled")
+            if full_unlock_active:
                 sections_to_load.extend(["sexual_romantic", "dark_content", "private_self", "substances_health"])
                 logger.debug("Session unlock enabled - including sensitive sections in prompt")
 
@@ -458,8 +491,17 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             profile_context=profile_context,
             user_name=user_name,
             has_tools=supports_tools,
-            has_vision=is_vision
+            has_vision=is_vision,
+            full_unlock_enabled=full_unlock_active
         )
+
+        # Log system prompt stats for debugging
+        prompt_lines = system_prompt.count('\n')
+        prompt_chars = len(system_prompt)
+        logger.info(f"[SystemPrompt] {prompt_chars} chars, {prompt_lines} lines, tools={supports_tools}, vision={is_vision}, full_unlock={full_unlock_active}")
+        if profile_context:
+            populated_sections = [k for k, v in profile_context.items() if v and isinstance(v, dict) and any(v.values())]
+            logger.debug(f"[Profile] Populated sections: {populated_sections}")
 
         # Build messages with memory-enhanced system prompt
         messages = ollama_service.build_messages_with_system(
@@ -467,7 +509,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             user_message=user_message,
             history=history,
             images=chat_request.images if is_vision else None,
-            is_vision_model=is_vision
+            is_vision_model=is_vision,
+            supports_tools=supports_tools
         )
 
         # Add user message to conversation
@@ -521,6 +564,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
 
             # Track if we're in thinking mode
             is_thinking = False
+            thinking_token_count = 0
             logger.debug(f"Starting stream with think={chat_request.think}")
 
             # Stream from Ollama - track for cleanup
@@ -541,11 +585,16 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                     # Stream thinking tokens if present
                     if msg.get("thinking"):
                         is_thinking = True
+                        thinking_token_count += 1
                         collected_thinking += msg["thinking"]  # Collect for storage
                         yield {
                             "event": "token",
                             "data": json.dumps({"thinking": msg["thinking"]})
                         }
+                        # Safety: if thinking goes on too long without content, break
+                        if thinking_token_count > 3000:
+                            logger.warning(f"Thinking limit reached ({thinking_token_count} tokens) without content, breaking")
+                            break
 
                     # Stream content tokens
                     if msg.get("content"):
@@ -574,6 +623,16 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             "data": json.dumps({"thinking_done": True})
                         }
                     break
+
+            # Safety: If we had thinking but no content and no tool calls, send a fallback
+            if collected_thinking and not collected_content and not tool_calls:
+                logger.warning("Model produced thinking but no content - sending fallback response")
+                fallback_msg = "I apologize, but I wasn't able to formulate a response. Could you please rephrase your question?"
+                collected_content = fallback_msg
+                yield {
+                    "event": "token",
+                    "data": json.dumps({"content": fallback_msg})
+                }
 
             # If no native tool_calls, try parsing text-based function calls
             if not tool_calls and collected_content:
@@ -695,6 +754,15 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                     except Exception:
                         pass
 
+                # Safety: If no content after tool call, send a fallback
+                if not followup_content:
+                    logger.warning("No content in follow-up response after tool call - sending fallback")
+                    followup_content = "I retrieved the information, but couldn't formulate a response. Please try rephrasing your question."
+                    yield {
+                        "event": "token",
+                        "data": json.dumps({"content": followup_content})
+                    }
+
                 # Add follow-up to conversation
                 if followup_content:
                     followup_msg = await conversation_store.add_message(
@@ -732,6 +800,21 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                                 "role": "assistant"
                             })
                         }
+
+                    # For non-tool models, extract profile updates from the response
+                    if not supports_tools and collected_content:
+                        try:
+                            from app.services.profile_extractor import extract_profile_updates
+                            profile_updates = extract_profile_updates(collected_content, chat_request.message)
+                            if profile_updates:
+                                logger.info(f"Extracted {len(profile_updates)} profile updates from non-tool model response")
+                                await profile_service.update_profile(
+                                    user.id,
+                                    profile_updates,
+                                    reason="Extracted from conversation (non-tool model)"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Profile extraction failed: {e}")
 
             # === Trigger Evaluation if Needed ===
             try:
@@ -945,6 +1028,7 @@ async def regenerate_response(
         # === Load User Profile ===
         profile_service = get_user_profile_service()
         profile_context = None
+        full_unlock_active = False  # Track if adult sections are unlocked
         try:
             # Base sections always loaded
             sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
@@ -959,7 +1043,8 @@ async def regenerate_response(
             session_unlock_status = await profile_service.get_session_unlock_status(user.id, session_id) if session_id else {"enabled": False}
 
             # Both Tier 1 (adult_mode) AND session unlock required for adult sections
-            if adult_status.get("enabled") and session_unlock_status.get("enabled"):
+            full_unlock_active = adult_status.get("enabled") and session_unlock_status.get("enabled")
+            if full_unlock_active:
                 sections_to_load.extend(["sexual_romantic", "dark_content", "private_self", "substances_health"])
                 logger.debug("Regenerate: Session unlock enabled - including sensitive sections")
 
@@ -1020,7 +1105,8 @@ async def regenerate_response(
             profile_context=profile_context,
             user_name=user_name,
             has_tools=supports_tools,
-            has_vision=is_vision
+            has_vision=is_vision,
+            full_unlock_enabled=full_unlock_active
         )
 
         # Build messages with memory-enhanced system prompt
@@ -1029,7 +1115,8 @@ async def regenerate_response(
             user_message=user_message,
             history=history[:-1] if history else [],  # Exclude the last user message as we'll add it fresh
             images=user_images if is_vision else None,
-            is_vision_model=is_vision
+            is_vision_model=is_vision,
+            supports_tools=supports_tools
         )
 
         # Prepare options
