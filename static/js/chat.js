@@ -52,6 +52,23 @@ export class ChatManager {
         try {
             let html = marked.parse(content);
 
+            // Sanitize HTML to prevent XSS attacks
+            if (typeof DOMPurify !== 'undefined') {
+                html = DOMPurify.sanitize(html, {
+                    ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'b', 'i', 'u', 'code', 'pre', 'ul', 'ol', 'li',
+                                   'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'a', 'hr',
+                                   'table', 'thead', 'tbody', 'tr', 'th', 'td', 'div', 'span', 'img',
+                                   'del', 'ins', 'sub', 'sup', 'dl', 'dt', 'dd', 'figure', 'figcaption',
+                                   'button'],
+                    ALLOWED_ATTR: ['href', 'src', 'alt', 'class', 'target', 'rel', 'title', 'id',
+                                   'onclick', 'style', 'width', 'height', 'colspan', 'rowspan'],
+                    ALLOW_DATA_ATTR: false,
+                    ADD_ATTR: ['target'],
+                    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'textarea'],
+                    FORBID_ATTR: ['onerror', 'onload', 'onmouseover', 'onfocus', 'onblur']
+                });
+            }
+
             // Style code blocks with GitHub-dark theme
             html = html.replace(/<pre><code class="language-(\w+)">/g, (match, lang) => {
                 return `<div class="rounded-xl overflow-hidden border border-gray-700 bg-[#0d1117] shadow-xl my-4">

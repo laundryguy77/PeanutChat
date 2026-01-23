@@ -5,6 +5,7 @@ import yaml
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from app.services.user_profile_store import get_user_profile_store, get_default_profile_template
+from app import config
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,8 @@ logger = logging.getLogger(__name__)
 class UserProfileService:
     """Business logic for user profile operations."""
 
-    ADULT_PASSCODE = "6060"
+    # Passcode loaded from environment variable for security
+    ADULT_PASSCODE = config.ADULT_PASSCODE
 
     # Sensitive sections requiring explicit enablement
     SENSITIVE_SECTIONS = [
@@ -461,7 +463,7 @@ class UserProfileService:
         if not adult_status.get("enabled") and enabled:
             return {
                 "success": False,
-                "error": "Adult mode must be enabled first (passcode 6060)"
+                "error": "Adult mode must be enabled first via Settings"
             }
 
         profile = self.store.set_full_unlock(user_id, enabled)
@@ -495,7 +497,7 @@ class UserProfileService:
         Users must explicitly run /full_unlock enable in each new session.
 
         Requires:
-        - adult_mode_enabled = True (Tier 1, via passcode 6060)
+        - adult_mode_enabled = True (Tier 1, via passcode in Settings)
 
         Args:
             user_id: The user's ID
@@ -514,7 +516,7 @@ class UserProfileService:
             if not adult_status.get("enabled"):
                 return {
                     "success": False,
-                    "error": "Uncensored mode must be enabled first (passcode 6060)"
+                    "error": "Uncensored mode must be enabled first via Settings"
                 }
 
         self.store.set_session_unlock(user_id, session_id, enabled)

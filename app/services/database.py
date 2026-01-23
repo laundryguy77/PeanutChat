@@ -376,7 +376,7 @@ class DatabaseService:
         """Add full_unlock_enabled and full_unlock_at columns to user_profiles.
 
         This enforces the two-tier unlock system:
-        - Tier 1 (adult_mode_enabled): Unlocked via passcode 6060 in Settings
+        - Tier 1 (adult_mode_enabled): Unlocked via passcode in Settings
         - Tier 2 (full_unlock_enabled): Unlocked via /full_unlock command in chat
 
         Migration also auto-enables full_unlock for existing users who already have

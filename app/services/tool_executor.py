@@ -8,6 +8,7 @@ import socket
 import ipaddress
 import time
 from urllib.parse import urlparse
+from cachetools import TTLCache
 from app.services.conversation_store import conversation_store
 from app.config import BRAVE_SEARCH_API_KEY, HF_TOKEN, VIDEO_GENERATION_SPACE
 from app.services.knowledge_base import get_knowledge_base
@@ -19,9 +20,13 @@ from app.services.video_backends import VideoGenerator
 
 logger = logging.getLogger(__name__)
 
-# URL cache: {url: {"content": ..., "timestamp": ..., "status": ...}}
-_url_cache: Dict[str, Dict[str, Any]] = {}
+# URL cache configuration
+URL_CACHE_MAX_ENTRIES = 20  # Reduced from 100 to prevent memory exhaustion
 URL_CACHE_TTL = 300  # 5 minutes
+URL_CACHE_MAX_CONTENT_SIZE = 10000  # 10KB max per entry
+
+# URL cache using TTLCache for automatic expiry and size limiting
+_url_cache: TTLCache = TTLCache(maxsize=URL_CACHE_MAX_ENTRIES, ttl=URL_CACHE_TTL)
 
 
 @dataclass
@@ -93,65 +98,63 @@ class ToolExecutor:
     def set_current_conversation(self, conv_id: str):
         """DEPRECATED: Use create_context() instead.
 
-        Sets conversation ID in context if available, otherwise logs warning.
+        Sets conversation ID in context. Raises error if no context exists.
         """
         ctx = get_current_context()
         if ctx:
             ctx.conversation_id = conv_id
         else:
-            # Fallback for legacy code paths - log warning
-            logger.warning(
-                "set_current_conversation called without context. "
-                "Use create_context() for thread-safe operation."
+            raise RuntimeError(
+                "ToolExecutionContext not initialized. "
+                "Call create_context() before using ToolExecutor methods. "
+                "This prevents race conditions in concurrent requests."
             )
-            self._deprecated_conv_id = conv_id
 
     def set_current_user(self, user_id: int):
         """DEPRECATED: Use create_context() instead.
 
-        Sets user ID in context if available, otherwise logs warning.
+        Sets user ID in context. Raises error if no context exists.
         """
         ctx = get_current_context()
         if ctx:
             ctx.user_id = user_id
         else:
-            # Fallback for legacy code paths - log warning
-            logger.warning(
-                "set_current_user called without context. "
-                "Use create_context() for thread-safe operation."
+            raise RuntimeError(
+                "ToolExecutionContext not initialized. "
+                "Call create_context() before using ToolExecutor methods. "
+                "This prevents race conditions in concurrent requests."
             )
-            self._deprecated_user_id = user_id
 
     def register_image(self, message_index: int, image_base64: str):
         """Register an image for the current request.
 
-        Prefers context-scoped registry, falls back to deprecated instance registry.
+        Requires context to be initialized. Raises error otherwise.
         """
         ctx = get_current_context()
         if ctx:
             ctx.register_image(message_index, image_base64)
         else:
-            logger.warning(
-                "register_image called without context. "
-                "Use create_context() for thread-safe operation."
+            raise RuntimeError(
+                "ToolExecutionContext not initialized. "
+                "Call create_context() before registering images. "
+                "This prevents race conditions in concurrent requests."
             )
-            self._deprecated_image_registry[f"image_{message_index}"] = image_base64
-            self._deprecated_image_registry["last_shared_image"] = image_base64
 
     def clear_images(self):
         """Clear the image registry for the current request."""
         ctx = get_current_context()
         if ctx:
             ctx.clear_images()
-        else:
-            self._deprecated_image_registry.clear()
+        # No error if no context - clearing nothing is safe
 
     def get_image(self, reference: str) -> Optional[str]:
         """Get image by reference from the current request's context."""
         ctx = get_current_context()
         if ctx:
             return ctx.get_image(reference)
-        return self._deprecated_image_registry.get(reference)
+        # Return None if no context - don't use deprecated registry
+        logger.warning("get_image called without context, returning None")
+        return None
 
     async def execute(
         self,
@@ -174,19 +177,21 @@ class ToolExecutor:
         # Get context-scoped values
         ctx = get_current_context()
 
-        # Resolve effective user_id (explicit > context > deprecated)
+        # Resolve effective user_id (explicit > context)
+        # No longer fall back to deprecated instance state
         effective_user_id = user_id
         if effective_user_id is None and ctx:
             effective_user_id = ctx.user_id
         if effective_user_id is None:
-            effective_user_id = self._deprecated_user_id
+            logger.warning("Tool execution without user_id - some tools may not work")
 
-        # Resolve effective conversation_id (explicit > context > deprecated)
+        # Resolve effective conversation_id (explicit > context)
+        # No longer fall back to deprecated instance state
         effective_conv_id = conversation_id
         if effective_conv_id is None and ctx:
             effective_conv_id = ctx.conversation_id
         if effective_conv_id is None:
-            effective_conv_id = self._deprecated_conv_id
+            logger.warning("Tool execution without conversation_id - some tools may not work")
 
         function = tool_call.get("function", {})
         name = function.get("name")
@@ -361,29 +366,36 @@ class ToolExecutor:
             return True
 
     def _get_cached_url(self, url: str) -> Optional[Dict[str, Any]]:
-        """Get cached URL content if still valid"""
-        global _url_cache
-        if url in _url_cache:
-            cached = _url_cache[url]
-            if time.time() - cached["timestamp"] < URL_CACHE_TTL:
+        """Get cached URL content if still valid.
+
+        TTLCache automatically handles expiry, so we just check if key exists.
+        """
+        try:
+            cached = _url_cache.get(url)
+            if cached:
                 logger.debug(f"Cache hit for: {url}")
                 return cached
-            else:
-                # Expired, remove from cache
-                del _url_cache[url]
+        except KeyError:
+            pass
         return None
 
     def _cache_url(self, url: str, result: Dict[str, Any]):
-        """Cache URL content"""
-        global _url_cache
+        """Cache URL content with size limit enforcement.
+
+        TTLCache automatically handles expiry and max entries.
+        We additionally enforce per-entry size limits.
+        """
+        # Enforce per-entry size limit on content
+        content = result.get("content", "")
+        if isinstance(content, str) and len(content) > URL_CACHE_MAX_CONTENT_SIZE:
+            # Truncate content to max size
+            result = {**result, "content": content[:URL_CACHE_MAX_CONTENT_SIZE] + "...[truncated]"}
+
         _url_cache[url] = {
             **result,
             "timestamp": time.time()
         }
-        # Clean old entries if cache gets too large
-        if len(_url_cache) > 100:
-            oldest_url = min(_url_cache, key=lambda u: _url_cache[u]["timestamp"])
-            del _url_cache[oldest_url]
+        logger.debug(f"Cached URL (cache size: {len(_url_cache)}/{URL_CACHE_MAX_ENTRIES})")
 
     async def _execute_browse_website(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Browse a website and return its content"""

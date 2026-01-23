@@ -1,9 +1,13 @@
 """File processor service for handling PDFs, ZIPs, and other file types."""
 
 import base64
+import binascii
 import zipfile
 import io
+import logging
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Try to import pypdf, fall back gracefully if not installed
 try:
@@ -11,7 +15,7 @@ try:
     PDF_SUPPORT = True
 except ImportError:
     PDF_SUPPORT = False
-    print("[WARNING] pypdf not installed. PDF text extraction will be limited.")
+    logger.warning("pypdf not installed. PDF text extraction will be limited.")
 
 
 class FileProcessor:
@@ -35,7 +39,7 @@ class FileProcessor:
         is_base64 = file_data.get('is_base64', False)
         name = file_data.get('name', 'unknown')
 
-        print(f"[FILE_PROCESSOR] Processing file: {name}, type: {file_type}, is_base64: {is_base64}, content_length: {len(content) if content else 0}")
+        logger.debug(f"Processing file: {name}, type: {file_type}, is_base64: {is_base64}, content_length: {len(content) if content else 0}")
 
         try:
             if file_type == 'pdf':
@@ -55,7 +59,7 @@ class FileProcessor:
 
     def _process_pdf(self, name: str, content_b64: str) -> Dict:
         """Extract text from PDF file."""
-        print(f"[FILE_PROCESSOR] _process_pdf called for: {name}, PDF_SUPPORT: {PDF_SUPPORT}")
+        logger.debug(f"_process_pdf called for: {name}, PDF_SUPPORT: {PDF_SUPPORT}")
 
         if not PDF_SUPPORT:
             return {
@@ -66,23 +70,34 @@ class FileProcessor:
             }
 
         try:
-            print(f"[FILE_PROCESSOR] Decoding base64, length: {len(content_b64)}")
-            pdf_bytes = base64.b64decode(content_b64)
-            print(f"[FILE_PROCESSOR] Decoded to {len(pdf_bytes)} bytes")
+            logger.debug(f"Decoding base64 PDF, length: {len(content_b64)}")
+
+            # Validate and decode base64
+            try:
+                pdf_bytes = base64.b64decode(content_b64, validate=True)
+            except binascii.Error as e:
+                logger.warning(f"Invalid base64 encoding for PDF {name}: {e}")
+                return {
+                    'name': name,
+                    'type': 'pdf',
+                    'error': 'Invalid file encoding',
+                    'content': '[Error: Invalid base64 encoding. Please re-upload the file.]'
+                }
+
+            logger.debug(f"Decoded PDF to {len(pdf_bytes)} bytes")
             pdf_file = io.BytesIO(pdf_bytes)
             reader = PdfReader(pdf_file)
-            print(f"[FILE_PROCESSOR] PDF has {len(reader.pages)} pages")
+            logger.debug(f"PDF {name} has {len(reader.pages)} pages")
 
             text_parts = []
             for i, page in enumerate(reader.pages):
                 page_text = page.extract_text()
-                print(f"[FILE_PROCESSOR] Page {i+1}: {len(page_text) if page_text else 0} chars")
+                logger.debug(f"PDF page {i+1}: {len(page_text) if page_text else 0} chars")
                 if page_text:
                     text_parts.append(f"--- Page {i + 1} ---\n{page_text}")
 
             full_text = "\n\n".join(text_parts)
-            print(f"[FILE_PROCESSOR] Total extracted text: {len(full_text)} chars")
-            print(f"[FILE_PROCESSOR] First 500 chars: {full_text[:500] if full_text else 'EMPTY'}")
+            logger.debug(f"Total extracted PDF text: {len(full_text)} chars")
 
             # Truncate if too long
             if len(full_text) > self.MAX_TEXT_LENGTH:
@@ -95,9 +110,7 @@ class FileProcessor:
                 'pages': len(reader.pages)
             }
         except Exception as e:
-            print(f"[FILE_PROCESSOR] Error processing PDF: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error processing PDF {name}: {e}", exc_info=True)
             return {
                 'name': name,
                 'type': 'pdf',
@@ -108,7 +121,18 @@ class FileProcessor:
     def _process_zip(self, name: str, content_b64: str) -> Dict:
         """List and extract text files from ZIP archive."""
         try:
-            zip_bytes = base64.b64decode(content_b64)
+            # Validate and decode base64
+            try:
+                zip_bytes = base64.b64decode(content_b64, validate=True)
+            except binascii.Error as e:
+                logger.warning(f"Invalid base64 encoding for ZIP {name}: {e}")
+                return {
+                    'name': name,
+                    'type': 'zip',
+                    'error': 'Invalid file encoding',
+                    'content': '[Error: Invalid base64 encoding. Please re-upload the file.]'
+                }
+
             zip_file = io.BytesIO(zip_bytes)
 
             with zipfile.ZipFile(zip_file, 'r') as zf:
@@ -190,14 +214,14 @@ class FileProcessor:
         Returns:
             Formatted string with all file contents
         """
-        print(f"[FILE_PROCESSOR] format_files_for_context called with {len(files) if files else 0} files")
+        logger.debug(f"format_files_for_context called with {len(files) if files else 0} files")
         if not files:
             return ""
 
         parts = ["The user has shared the following files:\n"]
 
         for file_data in files:
-            print(f"[FILE_PROCESSOR] Processing file_data: {file_data.get('name', 'unknown')}")
+            logger.debug(f"Processing file_data: {file_data.get('name', 'unknown')}")
             processed = self.process_file(file_data)
             name = processed.get('name', 'unknown')
             content = processed.get('content', '')
