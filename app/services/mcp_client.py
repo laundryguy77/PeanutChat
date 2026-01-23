@@ -112,6 +112,40 @@ MCP_PROCESS_LIMITS = {
 # Connection timeout for MCP initialization (seconds)
 MCP_CONNECT_TIMEOUT = 30.0
 
+# Dangerous patterns in command arguments that could indicate injection attempts
+DANGEROUS_ARG_PATTERNS = [
+    re.compile(r'[;&|`$]'),  # Shell metacharacters
+    re.compile(r'\$\('),  # Command substitution
+    re.compile(r'\$\{'),  # Variable expansion
+    re.compile(r'>\s*/', re.IGNORECASE),  # Output redirection to root paths
+    re.compile(r'<\s*/'),  # Input redirection from root paths
+    re.compile(r'\.\./\.\./'),  # Deep path traversal
+]
+
+
+def _validate_args(args: List[str]) -> tuple[bool, str]:
+    """
+    Validate MCP server arguments for security.
+
+    Returns:
+        (is_valid, error_message)
+    """
+    for i, arg in enumerate(args):
+        # Check for dangerous patterns
+        for pattern in DANGEROUS_ARG_PATTERNS:
+            if pattern.search(arg):
+                return False, f"Argument {i} contains potentially dangerous pattern"
+
+        # Check for null bytes (could be used for injection)
+        if '\x00' in arg:
+            return False, f"Argument {i} contains null byte"
+
+        # Check for excessive length (could be used for buffer overflow attempts)
+        if len(arg) > 4096:
+            return False, f"Argument {i} exceeds maximum length (4096 chars)"
+
+    return True, ""
+
 
 def _sanitize_log_args(args: List[str]) -> List[str]:
     """Sanitize command arguments for logging by redacting sensitive values."""
@@ -327,9 +361,21 @@ class MCPClient:
 
             args = self.server.args if self.server.args else []
 
+            # SECURITY: Validate arguments for injection attempts
+            args_valid, args_error = _validate_args(args)
+            if not args_valid:
+                logger.error(f"MCP argument validation failed: {args_error}")
+                return False
+
             # SECURITY: Sanitize args before logging to prevent credential leakage
             sanitized_args = _sanitize_log_args(args)
-            logger.info(f"Starting MCP server: {resolved_cmd} {' '.join(sanitized_args)}")
+
+            # AUDIT: Log MCP server execution for security monitoring
+            logger.info(
+                f"[MCP_AUDIT] Starting MCP server: "
+                f"name={self.server.name}, user_id={self.server.user_id}, "
+                f"cmd={resolved_cmd}, args={sanitized_args}"
+            )
 
             # SECURITY: Apply resource limits via preexec_fn
             self.process = await asyncio.create_subprocess_exec(

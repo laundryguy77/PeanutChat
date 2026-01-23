@@ -566,7 +566,7 @@ class UserProfileStore:
     def set_full_unlock(self, user_id: int, enabled: bool) -> Optional[UserProfile]:
         """Enable or disable full unlock (Tier 2 adult content gate).
 
-        This should only be called AFTER adult_mode_enabled is True (passcode 6060).
+        This should only be called AFTER adult_mode_enabled is True (via Settings).
         """
         now = datetime.utcnow().isoformat() + "Z" if enabled else None
 

@@ -102,7 +102,7 @@ async def enable_section(
     """Enable or disable a sensitive section.
 
     Enabling sensitive sections requires full_unlock to be enabled first
-    (via /full_unlock command after passcode 6060). Disabling is always allowed.
+    (via /full_unlock command after enabling adult mode in Settings). Disabling is always allowed.
     """
     if not request.user_confirmed:
         raise HTTPException(status_code=400, detail="User confirmation required")

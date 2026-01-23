@@ -81,6 +81,18 @@ TRUSTED_PROXIES = [p.strip() for p in os.getenv("TRUSTED_PROXIES", "").split(","
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 VIDEO_GENERATION_SPACE = os.getenv("VIDEO_GENERATION_SPACE", "Heartsync/NSFW-Uncensored-video")
 
+# Adult content passcode (MUST be set in environment for security)
+ADULT_PASSCODE = os.getenv("ADULT_PASSCODE", "")
+
+# Chat streaming limits
+THINKING_TOKEN_LIMIT_INITIAL = int(os.getenv("THINKING_TOKEN_LIMIT_INITIAL", "3000"))
+THINKING_TOKEN_LIMIT_FOLLOWUP = int(os.getenv("THINKING_TOKEN_LIMIT_FOLLOWUP", "2000"))
+CHAT_REQUEST_TIMEOUT = int(os.getenv("CHAT_REQUEST_TIMEOUT", "300"))  # 5 minutes
+
+# Feature availability flags (based on API key presence)
+WEB_SEARCH_AVAILABLE = bool(BRAVE_SEARCH_API_KEY)
+VIDEO_GENERATION_AVAILABLE = bool(HF_TOKEN)
+
 class AppSettings(BaseModel):
     persona: Optional[str] = None
     model: str = "huihui_ai/qwen3-vl-abliterated:8b"
