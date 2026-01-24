@@ -84,7 +84,7 @@ The passcode for unlocking adult content mode is hardcoded in the source code. A
 
 **Severity:** CRITICAL
 **Type:** Security - Information Disclosure
-**Status:** Open
+**Status:** RESOLVED (previously fixed - passcode now from env var, error messages sanitized)
 
 **Location:**
 - File: `app/services/user_profile_service.py`
@@ -136,7 +136,7 @@ Error messages reveal the exact passcode to users, completely defeating the purp
 
 **Severity:** HIGH
 **Type:** Security - Cross-Site Scripting
-**Status:** Open
+**Status:** RESOLVED (DOMPurify implemented in renderMarkdown with proper ALLOWED_TAGS/FORBID_TAGS)
 
 **Location:**
 - File: `static/js/chat.js`
@@ -207,7 +207,7 @@ let html = marked.parse(content);
 
 **Severity:** HIGH
 **Type:** Security - Denial of Service
-**Status:** Open
+**Status:** RESOLVED (TTLCache with 20 entries max, 5min TTL, 10KB per entry)
 
 **Location:**
 - File: `app/services/tool_executor.py`
@@ -267,7 +267,7 @@ _url_cache: TTLCache = TTLCache(maxsize=URL_CACHE_MAX_ENTRIES, ttl=URL_CACHE_TTL
 
 **Severity:** HIGH
 **Type:** Security - Race Condition
-**Status:** Open
+**Status:** RESOLVED (deprecated methods now raise RuntimeError if no context, ToolExecutionContext used)
 
 **Location:**
 - File: `app/services/tool_executor.py`
@@ -413,7 +413,7 @@ Implemented two-tier limit system with configurable environment variables:
 
 **Severity:** MEDIUM
 **Type:** Error Handling
-**Status:** Open
+**Status:** RESOLVED (validate=True added, binascii.Error caught with user-friendly messages)
 
 **Location:**
 - File: `app/services/file_processor.py`
