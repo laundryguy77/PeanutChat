@@ -161,6 +161,7 @@ export class ChatManager {
 
         const section = document.createElement('details');
         section.className = 'context-section mt-3 border-t border-gray-700/50 pt-3';
+        section.setAttribute('open', ''); // Expanded by default for debugging
 
         const summary = document.createElement('summary');
         summary.className = 'text-xs text-gray-500 cursor-pointer hover:text-gray-400 transition-colors flex items-center gap-1';
@@ -1076,11 +1077,39 @@ export class ChatManager {
             }
         }
 
-        // Message ID for actions
+        // Message ID for actions and context section
         if (data.role === 'assistant' && data.id) {
             if (this.currentAssistantMessage) {
                 this.currentAssistantMessage.element.dataset.messageId = data.id;
                 this.addAssistantActions(data.id);
+
+                // Add context section with metadata if available
+                if (data.metadata) {
+                    const metadata = {
+                        thinking_content: data.metadata.thinking_content || this.currentThinkingContent,
+                        memories_used: data.metadata.memories_used,
+                        tools_available: data.metadata.tools_available
+                    };
+
+                    // Only create context section if we have any metadata
+                    if (metadata.thinking_content || metadata.memories_used?.length || metadata.tools_available?.length) {
+                        // Remove the streaming thinking container if present (will be replaced by context section)
+                        if (this.thinkingContainer) {
+                            this.thinkingContainer.remove();
+                            this.thinkingContainer = null;
+                        }
+
+                        // Find the bubble container to add context section
+                        const bubbleContainer = this.currentAssistantMessage.bubbleContainer;
+                        if (bubbleContainer) {
+                            const bubble = bubbleContainer.querySelector('.rounded-2xl');
+                            if (bubble) {
+                                const contextSection = this.createContextSection(metadata);
+                                bubble.appendChild(contextSection);
+                            }
+                        }
+                    }
+                }
             }
         }
 

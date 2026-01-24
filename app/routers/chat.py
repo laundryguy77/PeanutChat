@@ -788,7 +788,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             "event": "message",
                             "data": json.dumps({
                                 "id": followup_msg.id,
-                                "role": "assistant"
+                                "role": "assistant",
+                                "metadata": {
+                                    "thinking_content": None,  # Thinking disabled for followups
+                                    "memories_used": context_metadata.get("memories_used"),
+                                    "tools_available": context_metadata.get("tools_available")
+                                }
                             })
                         }
 
@@ -832,7 +837,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             "event": "message",
                             "data": json.dumps({
                                 "id": assistant_msg.id,
-                                "role": "assistant"
+                                "role": "assistant",
+                                "metadata": {
+                                    "thinking_content": collected_thinking if collected_thinking else None,
+                                    "memories_used": context_metadata.get("memories_used"),
+                                    "tools_available": context_metadata.get("tools_available")
+                                }
                             })
                         }
 
@@ -1191,6 +1201,12 @@ async def regenerate_response(
         tool_calls = []
         regen_stream = None
 
+        # Build context metadata for debugging
+        regen_context_metadata = {
+            "memories_used": memory_context if memory_context else None,
+            "tools_available": [t["function"]["name"] for t in tools] if tools else None
+        }
+
         try:
             # Apply context window management with compaction (with user verification)
             messages = await build_context_with_compaction(
@@ -1251,14 +1267,21 @@ async def regenerate_response(
                     conv_id,
                     role="assistant",
                     content=collected_content,
-                    tool_calls=tool_calls if tool_calls else None
+                    tool_calls=tool_calls if tool_calls else None,
+                    memories_used=regen_context_metadata.get("memories_used"),
+                    tools_available=regen_context_metadata.get("tools_available")
                 )
                 if assistant_msg:
                     yield {
                         "event": "message",
                         "data": json.dumps({
                             "id": assistant_msg.id,
-                            "role": "assistant"
+                            "role": "assistant",
+                            "metadata": {
+                                "thinking_content": None,  # Regenerate doesn't use thinking
+                                "memories_used": regen_context_metadata.get("memories_used"),
+                                "tools_available": regen_context_metadata.get("tools_available")
+                            }
                         })
                     }
 
