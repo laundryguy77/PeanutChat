@@ -1,7 +1,7 @@
 # SESSION 4: MCP, Models & Edge Cases Testing
 
 ## Session Overview
-Test MCP server management, model switching, context compaction behavior, error states, and cross-feature integration.
+Test MCP server management, model switching, error states, and cross-feature integration.
 
 ## Pre-Session Checklist
 - Sessions 1-3 completed
@@ -9,385 +9,112 @@ Test MCP server management, model switching, context compaction behavior, error 
 - Ollama running with multiple models
 - (Optional) MCP server available for testing
 
+## IMPORTANT: Timeout Configuration
+All agents MUST configure these timeouts for LLM response handling:
+```python
+page.set_default_timeout(300000)  # 5 minutes for LLM responses
+page.set_default_navigation_timeout(120000)  # 2 minutes for page loads
+```
+
 ---
 
-## AGENT 1: MCP Server Management
-**Directory**: `tests/ui_testing/session4/agent1_mcp/`
-**Focus**: MCP server list, add/remove, connect/disconnect
+## AGENT 1: MCP Servers & Model Switching
+**Directory**: `tests/ui_testing/session4/agent1_mcp_models/`
+**Focus**: MCP server management, model dropdown, capabilities
 
 ### Prompt for Agent 1:
 ```
-You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is MCP SERVER MANAGEMENT.
+You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is MCP & MODEL SWITCHING.
 
 SETUP:
-1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session4/agent1_mcp/
-2. App URL: http://localhost:8080
+1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session4/agent1_mcp_models/
+2. App URL: http://localhost:8000
 3. Create unique test user: testuser_mcp1_{timestamp}
+4. CRITICAL: Set page.set_default_timeout(300000) and page.set_default_navigation_timeout(120000)
 
 INVESTIGATION TASKS - Screenshot everything:
 
-A. MCP SECTION LOCATION
+A. MCP SECTION
 Read /static/index.html lines 468-492.
 - Open Settings modal
-- Scroll to MCP Servers section
-- Screenshot full section
-- Verify extension icon and title
+- Screenshot MCP Servers section (#mcp-servers)
+- Screenshot empty state
 
-B. EMPTY SERVER LIST
-- Screenshot empty state (no servers)
-- Verify description text about MCP
-
-C. ADD SERVER BUTTON
+B. ADD MCP SERVER
 Read /static/js/mcp.js for add flow.
-- Find "Add MCP Server" button
-- Screenshot button
-- Click to open add modal
+- Click "Add MCP Server" button
+- Screenshot modal (#mcp-add-modal)
+- Verify: Name input, Command input, Args input
+- Test Cancel closes modal
 
-D. ADD SERVER MODAL
-Read mcp.js for modal structure.
-- Screenshot #mcp-add-modal
-- Verify elements:
-  * Title "Add MCP Server"
-  * Server Name input (#mcp-server-name)
-  * Command input (#mcp-server-command)
-  * Arguments input (#mcp-server-args)
-  * Helper text about MCP
-  * Cancel button (#mcp-modal-cancel)
-  * Add Server button (#mcp-modal-save)
-  * Close button (#mcp-modal-close)
-
-E. FORM PLACEHOLDERS
-- Screenshot input placeholders:
-  * "e.g., Filesystem, Database"
-  * "e.g., npx, python, node"
-  * "e.g., -y @modelcontextprotocol/server-filesystem /home/user"
-
-F. CANCEL ADD MODAL
-- Fill some fields
-- Click Cancel
-- Verify modal closes
-- Reopen, verify fields cleared
-
-G. ADD VALID SERVER
+C. ADD VALID SERVER
 Read /app/services/mcp_client.py for allowed commands.
-- Enter: Name: "Test Server", Command: "node", Args: ""
+- Enter: Name "Test", Command "node", Args ""
 - Click Add Server
-- Screenshot result
-- Verify server appears in list
+- Screenshot server in list
 
-H. SERVER LIST ITEM
-- Screenshot server list item
-- Verify elements:
-  * Connection status dot (green=connected, gray=disconnected)
-  * Server name
-  * Command display
-  * Toggle button (play/stop icon)
-  * Delete button (hover-only)
+D. SERVER LIST ITEM
+- Screenshot: Status dot, Name, Command, Toggle, Delete
+- Test toggle connect/disconnect
+- Screenshot connected (green) vs disconnected (gray) states
 
-I. CONNECTION STATUS INDICATOR
-- Screenshot disconnected state (gray dot)
-- Click connect (play_arrow icon)
-- Screenshot connecting state
-- Screenshot connected state (green glowing dot)
+E. DELETE SERVER
+- Hover over server, screenshot delete button
+- Click delete, screenshot confirmation
+- Confirm, verify removed
 
-J. TOGGLE CONNECTION
-- If connected, click toggle (stop icon, red)
-- Screenshot disconnecting
-- Screenshot disconnected state
-- Toggle back to connect
-- Verify state changes
-
-K. DELETE SERVER
-- Hover over server item
-- Screenshot delete button appearance
-- Click delete
-- Screenshot confirmation dialog
-- Cancel first
-- Then confirm delete
-- Verify server removed from list
-
-L. ADD INVALID COMMAND
+F. INVALID COMMAND
 Read mcp_client.py lines 23-47 for allowlist.
-- Try adding server with command: "bash" (not allowed)
-- Screenshot error response
-- Try command: "rm" (not allowed)
-- Document which commands are rejected
+- Try command "bash" (not allowed)
+- Screenshot error
 
-M. MULTIPLE SERVERS
-- Add 3+ different servers
-- Screenshot list with multiple items
-- Verify scrolling (max-height: 48)
-- Test individual connections
-
-N. CONNECTION ERROR HANDLING
-- Add server with bad command/args
-- Try to connect
-- Screenshot error state/message
-- How does UI show connection failed?
-
-O. MCP TOOLS (after connection)
-Read /app/routers/mcp.py line 219-224.
-- With server connected
-- Check if tools appear anywhere
-- Screenshot any tool listing
-
-OUTPUT: Create findings.md with:
-- MCP section element inventory
-- Add server flow documentation
-- Connection state management
-- Error handling observations
-- Command validation behavior
-- Any bugs or missing features
-```
-
----
-
-## AGENT 2: Model Listing & Switching
-**Directory**: `tests/ui_testing/session4/agent2_model_switch/`
-**Focus**: Model dropdown, switching, capability updates
-
-### Prompt for Agent 2:
-```
-You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is MODEL SWITCHING.
-
-SETUP:
-1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session4/agent2_model_switch/
-2. App URL: http://localhost:8080
-3. Create unique test user: testuser_model2_{timestamp}
-
-INVESTIGATION TASKS - Screenshot everything:
-
-A. MODEL DROPDOWN INVENTORY
+G. MODEL DROPDOWN
 Read /static/js/app.js for model loading.
-- Screenshot model dropdown (#model-select)
-- Click to expand
-- Screenshot all available models
-- Document each model name
+- Screenshot model selector (#model-select)
+- Click to expand, screenshot all models
+- Note model count
 
-B. CURRENT MODEL INDICATOR
-- Note which model shows as selected
-- Screenshot green status dot
-- Verify current model via GET /api/models/current
+H. MODEL SWITCHING
+- Select different model
+- Screenshot capability icons update
+- Wait for any API calls (up to 5 min)
+- Verify POST /api/models/select
 
-C. SWITCH TO DIFFERENT MODEL
-- Select different model from dropdown
-- Screenshot during switch
-- Verify POST /api/models/select called
-- Screenshot after switch complete
-- Verify dropdown shows new selection
+I. CAPABILITY ICONS
+- Test model with tools (#cap-tools green)
+- Test model with vision (#cap-vision blue)
+- Test model with thinking (#cap-thinking purple)
+- Screenshot each capability state
 
-D. CAPABILITY UPDATES
-Read /app/routers/models.py for capabilities.
-- Note current model capabilities
-- Switch to model with different capabilities
-- Screenshot #model-capabilities changing
-- Document which icons appear/disappear
-
-E. TOOLS CAPABILITY
-- Find model that supports tools
-- Switch to it
-- Verify #cap-tools (build icon) appears
-- Screenshot green icon with tooltip
-
-F. VISION CAPABILITY
-- Find model that supports vision
-- Switch to it
-- Verify #cap-vision (visibility icon) appears
-- Screenshot blue icon with tooltip
-
-G. THINKING CAPABILITY
-- Find model that supports thinking
-- Switch to it
-- Verify #cap-thinking (psychology icon) appears
-- Screenshot purple icon with tooltip
-
-H. NO CAPABILITIES
-- Find model with no special capabilities
-- Switch to it
-- Verify all capability icons hidden
-- Screenshot empty capabilities area
-
-I. MODEL DURING CHAT
-- Start streaming response
-- Try to switch models
-- Screenshot behavior
-- Is dropdown disabled during stream?
-
-J. MODEL PERSISTENCE
-- Select specific model
-- Refresh page
-- Verify same model selected after reload
-- Is it stored per-user?
-
-K. ADULT MODE MODEL FILTERING
-Read models.py lines 55-94.
-- Without adult mode: count models
-- Enable adult mode
+J. ADULT MODE FILTERING
+- Count models without adult mode
+- Enable adult mode (passcode 6060)
 - Recount models
 - Screenshot difference
-- Verify uncensored/nsfw models now visible
 
-L. MODEL SWITCH DURING CONVERSATION
-- Have active conversation with model A
-- Switch to model B
-- Send message
-- Does response come from model B?
-- Is there any indicator in UI?
-
-M. OLLAMA CONNECTIVITY
-- What happens if Ollama is down?
-- Try to load models
-- Screenshot error handling
-- How does UI recover?
-
-N. RAPID MODEL SWITCHING
-- Switch models rapidly (click different models quickly)
+K. RAPID SWITCHING
+- Switch models quickly
 - Screenshot any race conditions
-- Verify final state is correct
+- Verify final state correct
 
-OUTPUT: Create findings.md with:
-- Model inventory
-- Capability mapping per model
-- Switch flow documentation
-- Filtering behavior
-- Persistence verification
-- Error handling
-- Any bugs or race conditions
+OUTPUT: Create findings.md with MCP and model switching documentation.
 ```
 
 ---
 
-## AGENT 3: Context Compaction Behavior
-**Directory**: `tests/ui_testing/session4/agent3_compaction/`
-**Focus**: Context gauge, compaction triggers, summarization
-
-### Prompt for Agent 3:
-```
-You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is CONTEXT COMPACTION.
-
-SETUP:
-1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session4/agent3_compaction/
-2. App URL: http://localhost:8080
-3. Create unique test user: testuser_compact3_{timestamp}
-
-INVESTIGATION TASKS - Screenshot everything:
-
-A. CONTEXT GAUGE BASELINE
-Read /static/index.html lines 268-283.
-- Screenshot context gauge at conversation start
-- Verify gauge elements:
-  * Memory icon
-  * Background bar (gray)
-  * Fill bar (primary color)
-  * Label showing percentage
-
-B. GAUGE FILL PROGRESSION
-- Send short message
-- Screenshot gauge
-- Send longer message
-- Screenshot gauge increase
-- Document fill rate estimation
-
-C. LOW CONTEXT STATE
-- New conversation
-- Screenshot gauge at ~0-10%
-- Label should show low percentage
-
-D. MEDIUM CONTEXT STATE
-- Build conversation to ~50%
-- Screenshot gauge
-- Observe fill animation (transition-all duration-300)
-
-E. HIGH CONTEXT STATE
-- Build conversation to ~70%+
-- Screenshot gauge
-- This should approach compaction threshold
-
-F. COMPACTION SETTINGS VERIFY
-Read /static/index.html lines 604-664.
-- Open Settings
-- Screenshot compaction settings
-- Note current values:
-  * Enabled: true/false
-  * Buffer: default 15%
-  * Threshold: default 70%
-  * Protected messages: default 6
-
-G. MANUAL THRESHOLD TEST
-- Set threshold to 50%
-- Save settings
-- Build conversation until gauge hits 50%
-- Screenshot when compaction triggers
-
-H. COMPACTION IN ACTION
-Read /app/services/compaction_service.py.
-- When compaction triggers, observe:
-  * Any status indicator?
-  * How does conversation change?
-  * Are old messages summarized?
-- Screenshot before/after compaction
-
-I. PROTECTED MESSAGES
-- Set protected messages to minimum (4)
-- Trigger compaction
-- Verify most recent 4 messages preserved
-- Screenshot message history
-
-J. COMPACTION DISABLED
-- Disable compaction toggle
-- Build long conversation
-- Verify gauge fills past threshold
-- No compaction should trigger
-- Screenshot at high fill level
-
-K. SUMMARY BUFFER EFFECT
-- Set buffer to max (30%)
-- Trigger compaction
-- Observe how much context freed
-- Screenshot gauge after compaction
-
-L. CONTEXT OVERFLOW
-- Disable compaction
-- Exceed context limit
-- Screenshot any error/warning
-- How does UI handle overflow?
-
-M. VRAM GAUGE (if GPU)
-- Screenshot VRAM gauge (#vram-gauge-container)
-- If hidden, note no GPU detected
-- If visible:
-  * Observe during model usage
-  * Screenshot fill levels
-
-N. GAUGE ANIMATION
-- Observe gauge transition effect
-- Screenshot during fill change
-- Verify smooth animation
-
-OUTPUT: Create findings.md with:
-- Context gauge behavior documentation
-- Compaction trigger observation
-- Threshold testing results
-- Protected message verification
-- Summary buffer effect
-- Error handling for overflow
-- Any bugs or unexpected behavior
-```
-
----
-
-## AGENT 4: Error States & Edge Cases
-**Directory**: `tests/ui_testing/session4/agent4_errors/`
+## AGENT 2: Error States & Edge Cases
+**Directory**: `tests/ui_testing/session4/agent2_errors_edge/`
 **Focus**: Error handling, edge cases, graceful degradation
 
-### Prompt for Agent 4:
+### Prompt for Agent 2:
 ```
 You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is ERROR STATES.
 
 SETUP:
-1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session4/agent4_errors/
-2. App URL: http://localhost:8080
-3. Create unique test user: testuser_error4_{timestamp}
+1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session4/agent2_errors_edge/
+2. App URL: http://localhost:8000
+3. Create unique test user: testuser_error2_{timestamp}
+4. CRITICAL: Set page.set_default_timeout(300000) and page.set_default_navigation_timeout(120000)
 
 INVESTIGATION TASKS - Screenshot everything:
 
@@ -396,256 +123,156 @@ A. NETWORK DISCONNECTION
 - Simulate network disconnect (dev tools)
 - Screenshot error handling
 - How does UI indicate failure?
-- Any retry mechanism?
 
-B. SERVER DOWN
-- Stop peanutchat service
-- Try to use app
-- Screenshot error states
-- Restart service
-- Screenshot recovery
-
-C. AUTHENTICATION EXPIRY
+B. AUTHENTICATION EXPIRY
 Read /static/js/auth.js for token refresh.
-- Manually delete access_token cookie
+- Delete access_token cookie
 - Try to send message
 - Screenshot auth error
 - Does it redirect to login?
 
-D. INVALID API RESPONSES
-- What if API returns 500?
-- Screenshot error display
-- Does UI show user-friendly message?
-
-E. EMPTY STATE HANDLING
-- New user, empty conversation list
-- Screenshot empty state
-- New user, no memories
+C. EMPTY STATES
+- New user: screenshot empty conversation list
 - Screenshot empty memory state
-- New user, no knowledge docs
 - Screenshot empty KB state
 
-F. VERY LONG INPUT
+D. VERY LONG INPUT
 - Paste 10,000+ character message
 - Screenshot textarea behavior
-- Try to send
-- Screenshot any truncation/error
+- Send, screenshot any truncation/error
 
-G. SPECIAL CHARACTERS
-- Send message with: <script>alert('xss')</script>
+E. XSS ATTEMPT
+- Send: <script>alert('xss')</script>
 - Screenshot rendering (should be escaped)
-- Send: ' OR 1=1 --
-- Screenshot handling
+- Verify safe handling
 
-H. RAPID INTERACTIONS
+F. RAPID INTERACTIONS
 - Click send button repeatedly
-- Screenshot behavior
-- Does it prevent double-send?
+- Screenshot double-send prevention
 - Click "New Chat" rapidly
 - Screenshot any issues
 
-I. CONCURRENT OPERATIONS
-- Start file upload
-- While uploading, try other operations
-- Screenshot any conflicts
-
-J. MODAL CONFLICTS
+G. MODAL CONFLICTS
 - Open settings modal
 - Try to open another modal
 - Screenshot behavior
-- ESC key handling with multiple modals?
+- Test ESC key handling
 
-K. BROWSER BACK/FORWARD
-- Navigate through conversations
-- Use browser back button
-- Screenshot behavior
-- Does state preserve?
+H. MOBILE VIEWPORT
+- Set viewport to 375x667 (iPhone)
+- Screenshot full app
+- Test major interactions
+- Document responsive issues
 
-L. PAGE REFRESH DURING OPERATION
+I. KEYBOARD NAVIGATION
+- Tab through all interactive elements
+- Screenshot focus indicators
+- Document accessibility gaps
+
+J. CLIPBOARD OPERATIONS
+- Test paste into textarea
+- Test copy from messages
+- Screenshot clipboard feedback
+
+K. PAGE REFRESH DURING STREAM
 - Start streaming response
 - Refresh page
 - Screenshot state after refresh
 - Is conversation preserved?
 
-M. MOBILE VIEWPORT
-- Set viewport to 375x667 (iPhone)
-- Screenshot full app
-- Test all major interactions
-- Document responsive issues
-
-N. ZOOM LEVELS
-- Test at 50% zoom
-- Test at 200% zoom
-- Screenshot UI at extremes
-- Note any overflow issues
-
-O. KEYBOARD NAVIGATION
-- Tab through all interactive elements
-- Screenshot focus indicators
-- Can you use app without mouse?
-- Document accessibility gaps
-
-P. CLIPBOARD OPERATIONS
-- Test paste into textarea
-- Test copy from messages
-- Screenshot clipboard feedback
-
-OUTPUT: Create findings.md with:
-- Error state catalog with screenshots
-- Edge case behaviors
-- Recovery mechanisms
-- Responsive design issues
-- Accessibility gaps
-- Security handling
-- Recommendations
+OUTPUT: Create findings.md with error states and edge case documentation.
 ```
 
 ---
 
-## AGENT 5: Cross-Feature Integration Testing
-**Directory**: `tests/ui_testing/session4/agent5_integration/`
-**Focus**: Feature interactions, end-to-end flows
+## AGENT 3: Integration Testing
+**Directory**: `tests/ui_testing/session4/agent3_integration/`
+**Focus**: Cross-feature interactions, end-to-end flows
 
-### Prompt for Agent 5:
+### Prompt for Agent 3:
 ```
 You are a UI tester for PeanutChat using Playwright + Chromium. Your focus is INTEGRATION TESTING.
 
 SETUP:
-1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session4/agent5_integration/
-2. App URL: http://localhost:8080
-3. Create unique test user: testuser_integ5_{timestamp}
+1. Create test directory: /home/user/PeanutChat/tests/ui_testing/session4/agent3_integration/
+2. App URL: http://localhost:8000
+3. Create unique test user: testuser_integ3_{timestamp}
+4. CRITICAL: Set page.set_default_timeout(300000) and page.set_default_navigation_timeout(120000)
 
 INVESTIGATION TASKS - Screenshot everything:
 
 A. COMPLETE USER JOURNEY
-Document full flow with screenshots:
+Document full flow:
 1. Fresh registration
-2. First chat message
+2. First chat message (wait up to 5 min)
 3. Configure profile
 4. Upload knowledge document
-5. Chat that uses KB search
+5. Chat that uses KB (wait up to 5 min)
 6. View memories created
 7. Change theme
 8. Logout
 9. Login again
 10. Verify all state preserved
 
-B. KNOWLEDGE + CHAT INTEGRATION
+B. KNOWLEDGE + CHAT
 - Upload technical document
-- Ask question about document content
+- Ask question about content (wait up to 5 min)
 - Screenshot response
-- Verify KB was searched (tool indicator?)
-- Does response reference document?
+- Verify KB was searched
 
-C. MEMORY + CHAT INTEGRATION
-- Chat about preferences
-- Wait for AI to learn
+C. MEMORY + CHAT
+- Chat about preferences (wait up to 5 min)
 - Check memories created
 - New conversation
-- Chat referencing past preferences
+- Chat referencing preferences (wait up to 5 min)
 - Screenshot memory being used
 
-D. PROFILE + CHAT INTEGRATION
+D. PROFILE + CHAT
 - Set communication style to "sarcastic_dry"
-- Save settings
-- Chat and observe response style
+- Save, chat (wait up to 5 min)
 - Change to "empathetic_supportive"
 - Compare responses
-- Screenshot differences
 
-E. THINKING + TOOLS INTEGRATION
+E. THINKING + TOOLS
 - Enable thinking mode
-- Ask question requiring web search
-- Screenshot thinking + tool call display
-- How do they interact visually?
+- Ask question requiring tools (wait up to 5 min)
+- Screenshot thinking + tool display
 
-F. MODEL SWITCH + CHAT CONTINUITY
-- Have conversation with model A
-- Note response style
+F. MODEL SWITCH + CONTINUITY
+- Conversation with model A
 - Switch to model B
-- Continue conversation
-- Screenshot any differences
-- Is context preserved?
-
-G. ADULT MODE + PROFILE FLOW
-- Enable adult mode (passcode)
-- Run full unlock onboarding
-- Configure sensitive sections
-- Verify chat behavior changes
+- Continue conversation (wait up to 5 min)
 - Screenshot differences
 
-H. MCP + CHAT INTEGRATION
-- Connect MCP server
-- Chat to trigger MCP tool
-- Screenshot tool execution
-- How does UI show MCP tool results?
-
-I. COMPACTION + CONVERSATION HISTORY
-- Build long conversation
-- Trigger compaction
-- Scroll back in history
-- How do summarized messages appear?
+G. COMPACTION + HISTORY
+- Set low threshold (50%)
+- Build long conversation (multiple waits, up to 5 min each)
+- Observe compaction
 - Screenshot before/after
 
-J. MULTI-FEATURE STRESS TEST
-Simultaneously active:
-- Streaming response
-- File attachment
-- Thinking mode
-- Screenshot complex state
-- Any performance issues?
-
-K. SETTINGS SAVE VERIFICATION
+H. SETTINGS PERSISTENCE
 Change all settings:
-- Profile fields
-- Theme
-- Persona
-- Model parameters
-- Compaction settings
-Save and verify each persists
+- Profile, Theme, Persona, Parameters, Compaction
+- Save, refresh
+- Verify each persists
 
-L. CONVERSATION FORK + EDIT TREE
+I. CONVERSATION FORK
 - Create conversation A
-- Fork at message 3 → conversation B
-- Edit message 2 in B
+- Fork at message 3
+- Edit in fork
 - Verify A unaffected
 - Screenshot conversation list
 
-M. SESSION BOUNDARIES
-- Login session A
-- Open new tab
-- Verify session handling
-- Both tabs functional?
-- State synchronization?
-
-N. EXPORT/IMPORT CYCLE
-- Populate profile
-- Export profile
-- Reset profile
-- Verify reset
-- (Import if available)
-- Screenshot each step
-
-O. FULL APP TOUR
-Create comprehensive screenshot tour:
-1. Landing/Auth screen
+J. FULL APP TOUR
+Screenshot comprehensive tour:
+1. Auth screen
 2. Empty dashboard
 3. Active conversation
 4. Settings modal (each section)
-5. Profile section
-6. Knowledge section
-7. Memory section
-8. MCP section
-9. Each theme
-10. Error states
+5. Each theme
+6. Error states
 
-OUTPUT: Create findings.md with:
-- User journey documentation
-- Integration point analysis
-- Cross-feature bugs
-- State management observations
-- Performance notes
-- Comprehensive screenshot catalog
+OUTPUT: Create findings.md with integration test documentation and screenshot catalog.
 ```
 
 ---
@@ -653,23 +280,23 @@ OUTPUT: Create findings.md with:
 ## Session 4 Execution Command
 
 ```
-I need you to run 5 UI testing agents in parallel for PeanutChat Session 4.
+I need you to run 3 UI testing agents in parallel for PeanutChat Session 4.
 
-Create the test directory structure first, then spawn these 5 agents simultaneously:
+Create the test directory structure first, then spawn these 3 agents simultaneously:
 
-1. Agent 1 - MCP server management (add/remove, connect/disconnect)
-2. Agent 2 - Model listing & switching (dropdown, capabilities)
-3. Agent 3 - Context compaction behavior (gauge, triggers, summarization)
-4. Agent 4 - Error states & edge cases (error handling, graceful degradation)
-5. Agent 5 - Cross-feature integration testing (end-to-end flows)
+1. Agent 1 - MCP Servers & Model Switching (MCP management, model dropdown)
+2. Agent 2 - Error States & Edge Cases (error handling, accessibility)
+3. Agent 3 - Integration Testing (end-to-end flows, cross-feature)
 
 Each agent should:
 - Create unique test user
 - Use Playwright + Chromium
+- Set page.set_default_timeout(300000) for LLM responses
+- Set page.set_default_navigation_timeout(120000) for page loads
 - Screenshot EVERY interaction
-- Read source code to understand expected behavior
+- Wait for LLM responses to complete before next action (up to 5 min)
 - Document findings in their agent directory
 - Focus on INVESTIGATION, not fixes
 
-The app is running at http://localhost:8080
+The app is running at http://localhost:8000
 ```
