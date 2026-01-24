@@ -11,7 +11,123 @@ export class ChatManager {
         this.currentThinkingContent = '';
         this.thinkingContainer = null;
         this.currentToolCalls = [];
+
+        // Status tracking
+        this.modelStatus = 'idle'; // idle, thinking, generating, using_tool
+        this.statusStartTime = null;
+        this.statusTimer = null;
+        this.abortController = null;
+
         this.initializeMarkdown();
+        this.initializeStatusBar();
+    }
+
+    /**
+     * Initialize the status bar and stop button
+     */
+    initializeStatusBar() {
+        const stopBtn = document.getElementById('stop-generation-btn');
+        if (stopBtn) {
+            stopBtn.addEventListener('click', () => this.stopGeneration());
+        }
+    }
+
+    /**
+     * Update the model status indicator
+     * @param {string} status - 'idle', 'thinking', 'generating', 'using_tool'
+     * @param {string} [toolName] - Name of the tool being used (for using_tool status)
+     */
+    updateModelStatus(status, toolName = null) {
+        this.modelStatus = status;
+        const statusBar = document.getElementById('model-status-bar');
+        const statusIcon = document.getElementById('status-icon');
+        const statusText = document.getElementById('status-text');
+        const statusDuration = document.getElementById('status-duration');
+
+        if (!statusBar) return;
+
+        if (status === 'idle') {
+            statusBar.classList.add('hidden');
+            this.stopStatusTimer();
+            return;
+        }
+
+        // Show the status bar
+        statusBar.classList.remove('hidden');
+
+        // Start timer if not already running
+        if (!this.statusTimer) {
+            this.statusStartTime = Date.now();
+            this.statusTimer = setInterval(() => {
+                if (statusDuration) {
+                    const elapsed = Math.floor((Date.now() - this.statusStartTime) / 1000);
+                    statusDuration.textContent = `${elapsed}s`;
+                }
+            }, 1000);
+        }
+
+        // Update icon and text based on status
+        const statusConfig = {
+            thinking: {
+                icon: 'psychology',
+                text: 'Thinking...',
+                iconClass: 'text-purple-400 animate-pulse'
+            },
+            generating: {
+                icon: 'edit_note',
+                text: 'Generating response...',
+                iconClass: 'text-primary animate-pulse'
+            },
+            using_tool: {
+                icon: 'build',
+                text: `Using ${toolName || 'tool'}...`,
+                iconClass: 'text-green-400 animate-spin'
+            }
+        };
+
+        const config = statusConfig[status] || statusConfig.generating;
+
+        if (statusIcon) {
+            statusIcon.textContent = config.icon;
+            statusIcon.className = `material-symbols-outlined ${config.iconClass}`;
+        }
+        if (statusText) {
+            statusText.textContent = config.text;
+        }
+    }
+
+    /**
+     * Stop the status timer
+     */
+    stopStatusTimer() {
+        if (this.statusTimer) {
+            clearInterval(this.statusTimer);
+            this.statusTimer = null;
+        }
+        this.statusStartTime = null;
+    }
+
+    /**
+     * Stop the current generation
+     */
+    stopGeneration() {
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+
+        // Add a note to the current message that it was stopped
+        if (this.currentAssistantMessage && this.currentStreamContent) {
+            this.appendToAssistantMessage('\n\n*[Generation stopped by user]*');
+        }
+
+        this.isStreaming = false;
+        this.updateModelStatus('idle');
+
+        const sendBtn = document.getElementById('send-btn');
+        if (sendBtn) sendBtn.disabled = false;
+
+        this.showToast('Generation stopped', 'info', 2000);
     }
 
     /**
@@ -791,11 +907,16 @@ export class ChatManager {
             return;
         }
 
+        // Create abort controller for this request
+        this.abortController = new AbortController();
+        this.updateModelStatus('generating');
+
         try {
             const response = await fetch(`/api/chat/conversations/${convId}/regenerate/${messageId}`, {
                 method: 'POST',
                 headers: this.app.getSessionHeaders(),  // Include session ID for adult content gating
-                credentials: 'include'
+                credentials: 'include',
+                signal: this.abortController.signal
             });
             if (!response.ok) throw new Error('Failed to regenerate');
 
@@ -806,17 +927,23 @@ export class ChatManager {
             await this.handleSSEStream(response);
             await this.app.loadConversation(convId);
         } catch (error) {
-            console.error('[Regenerate] Failed to regenerate response:', error);
-            this.showToast('Failed to regenerate response. Please try again.', 'error');
-            // Remove the typing indicator if it's showing
-            if (this.currentAssistantMessage) {
-                const typing = this.currentAssistantMessage.contentEl?.querySelector('.typing-indicator');
-                if (typing) typing.remove();
-                this.currentAssistantMessage.contentEl.innerHTML = '<span class="text-red-400">Failed to regenerate response.</span>';
+            if (error.name === 'AbortError') {
+                console.log('[Regenerate] Aborted by user');
+            } else {
+                console.error('[Regenerate] Failed to regenerate response:', error);
+                this.showToast('Failed to regenerate response. Please try again.', 'error');
+                // Remove the typing indicator if it's showing
+                if (this.currentAssistantMessage) {
+                    const typing = this.currentAssistantMessage.contentEl?.querySelector('.typing-indicator');
+                    if (typing) typing.remove();
+                    this.currentAssistantMessage.contentEl.innerHTML = '<span class="text-red-400">Failed to regenerate response.</span>';
+                }
             }
         } finally {
             this.isStreaming = false;
             this.currentAssistantMessage = null;
+            this.abortController = null;
+            this.updateModelStatus('idle');
             document.getElementById('send-btn').disabled = false;
         }
     }
@@ -909,6 +1036,12 @@ export class ChatManager {
         this.isStreaming = true;
         this.totalStreamTokens = 0;
 
+        // Create abort controller for this request
+        this.abortController = new AbortController();
+
+        // Update status to show we're starting
+        this.updateModelStatus(think ? 'thinking' : 'generating');
+
         const sendBtn = document.getElementById('send-btn');
         sendBtn.disabled = true;
 
@@ -925,6 +1058,7 @@ export class ChatManager {
                 method: 'POST',
                 headers,
                 credentials: 'include',
+                signal: this.abortController.signal,
                 body: JSON.stringify({
                     message: text,
                     images: images.length > 0 ? images : undefined,
@@ -936,10 +1070,16 @@ export class ChatManager {
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             await this.handleSSEStream(response);
         } catch (error) {
-            this.appendToAssistantMessage(`Error: ${error.message}`);
+            if (error.name === 'AbortError') {
+                console.log('[Chat] Generation aborted by user');
+            } else {
+                this.appendToAssistantMessage(`Error: ${error.message}`);
+            }
         } finally {
             this.isStreaming = false;
             this.currentAssistantMessage = null;
+            this.abortController = null;
+            this.updateModelStatus('idle');
             sendBtn.disabled = false;
         }
     }
@@ -987,16 +1127,19 @@ export class ChatManager {
 
         // Thinking tokens
         if (data.thinking !== undefined) {
+            this.updateModelStatus('thinking');
             this.appendThinkingContent(data.thinking);
         }
 
         // Thinking done
         if (data.thinking_done) {
+            this.updateModelStatus('generating');
             this.finishThinking();
         }
 
         // Content tokens
         if (data.content !== undefined) {
+            this.updateModelStatus('generating');
             this.appendToAssistantMessage(data.content);
 
             // Update context usage estimate
@@ -1007,6 +1150,7 @@ export class ChatManager {
 
         // Tool call
         if (data.name && data.arguments !== undefined) {
+            this.updateModelStatus('using_tool', data.name);
             toolIndicator = this.addToolIndicator(data.name, 'processing');
             // Track tool call for log
             this.currentToolCalls.push({
@@ -1020,6 +1164,8 @@ export class ChatManager {
 
         // Tool result
         if (data.result !== undefined) {
+            // Switch back to generating after tool completes
+            this.updateModelStatus('generating');
             const status = data.result.success ? 'complete' : 'error';
             let message = data.result.success ? 'Complete' : data.result.error;
 
