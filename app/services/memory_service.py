@@ -24,18 +24,29 @@ class MemoryService:
     ) -> dict:
         """Add a memory with embedding."""
         try:
-            # Check for duplicates
-            existing = self.store.get_user_memories(user_id)
+            # Generate embedding first (needed for semantic duplicate check)
+            embedding = await self.embedding_service.get_embedding(content)
+
+            # Check for duplicates using semantic similarity
+            existing = self.store.get_memories_with_embeddings(user_id)
             for mem in existing:
+                # Exact match check (case-insensitive)
                 if mem.content.lower().strip() == content.lower().strip():
                     return {
                         "success": False,
                         "error": "Duplicate memory - already stored",
                         "existing_id": mem.id
                     }
-
-            # Generate embedding
-            embedding = await self.embedding_service.get_embedding(content)
+                # Semantic similarity check (threshold 0.85 = very similar)
+                if mem.embedding and embedding:
+                    similarity = self._cosine_similarity(embedding, mem.embedding)
+                    if similarity >= 0.85:
+                        return {
+                            "success": False,
+                            "error": f"Similar memory already exists (similarity: {similarity:.0%})",
+                            "existing_id": mem.id,
+                            "existing_content": mem.content[:100]
+                        }
 
             # Store memory
             memory = self.store.create_memory(

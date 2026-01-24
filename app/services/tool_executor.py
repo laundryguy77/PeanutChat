@@ -842,12 +842,17 @@ class ToolExecutor:
             return {"success": False, "error": "User not authenticated"}
 
         memory_service = get_memory_service()
+        # Use source from args if provided (explicit vs inferred), default to inferred
+        source = args.get("source", "inferred")
+        if source not in ("explicit", "inferred"):
+            source = "inferred"
+
         result = await memory_service.add_memory(
             user_id=user_id,
             content=args.get("content", ""),
             category=args.get("category", "general"),
             importance=args.get("importance", 5),
-            source="inferred"
+            source=source
         )
         return result
 

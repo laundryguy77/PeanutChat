@@ -791,6 +791,30 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                                 "role": "assistant"
                             })
                         }
+
+                    # Extract memories from followup response
+                    try:
+                        from app.services.memory_extractor import extract_memories
+                        extracted_memories = extract_memories(
+                            followup_content,
+                            chat_request.message,
+                            include_implicit=False  # Only explicit tags after tool use
+                        )
+                        if extracted_memories:
+                            memory_service = get_memory_service()
+                            for mem in extracted_memories:
+                                result = await memory_service.add_memory(
+                                    user_id=user.id,
+                                    content=mem["content"],
+                                    category=mem["category"],
+                                    importance=mem["importance"],
+                                    source=mem["source"]
+                                )
+                                if result.get("success"):
+                                    logger.info(f"Auto-saved memory from followup: {mem['content'][:50]}...")
+                    except Exception as e:
+                        logger.warning(f"Memory extraction from followup failed: {e}")
+
             else:
                 # No tool calls - add regular assistant message
                 if collected_content:
@@ -826,6 +850,30 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                                 )
                         except Exception as e:
                             logger.warning(f"Profile extraction failed: {e}")
+
+                    # Extract memories from model response (for all models)
+                    if collected_content:
+                        try:
+                            from app.services.memory_extractor import extract_memories
+                            extracted_memories = extract_memories(
+                                collected_content,
+                                chat_request.message,
+                                include_implicit=not supports_tools  # Only implicit for non-tool models
+                            )
+                            if extracted_memories:
+                                memory_service = get_memory_service()
+                                for mem in extracted_memories:
+                                    result = await memory_service.add_memory(
+                                        user_id=user.id,
+                                        content=mem["content"],
+                                        category=mem["category"],
+                                        importance=mem["importance"],
+                                        source=mem["source"]
+                                    )
+                                    if result.get("success"):
+                                        logger.info(f"Auto-saved memory: {mem['content'][:50]}...")
+                        except Exception as e:
+                            logger.warning(f"Memory extraction failed: {e}")
 
             # === Trigger Evaluation if Needed ===
             try:
