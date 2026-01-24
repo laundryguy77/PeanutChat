@@ -4,12 +4,21 @@ class ProfileManager {
         this.profile = null;
         this.adultMode = false;
         this.initialized = false;
+        this.isDirty = false;  // Track unsaved changes
+        this.saveTimeout = null;  // Debounce timer for auto-save
     }
 
-    async init() {
+    async init(forceReload = false) {
         // Check if user is authenticated
         if (typeof authManager !== 'undefined' && !authManager.isAuthenticated()) {
             this.renderNotAuthenticated();
+            return;
+        }
+
+        // Force reload if requested (e.g., when opening settings modal)
+        if (forceReload) {
+            console.log('[Profile] Force reloading profile from server');
+            await this.loadProfile();
             return;
         }
 
@@ -170,6 +179,15 @@ class ProfileManager {
                     </div>
                 </div>
 
+                <!-- Save Button -->
+                <div id="profile-save-container" class="hidden">
+                    <button id="profile-save-btn" onclick="profileManager.saveProfileWithFeedback()"
+                            class="w-full flex items-center justify-center gap-2 py-2.5 bg-primary hover:bg-primary-hover rounded-lg text-sm text-white font-medium transition-colors">
+                        <span class="material-symbols-outlined text-sm">save</span>
+                        Save Changes
+                    </button>
+                </div>
+
                 <!-- Action Buttons -->
                 <div class="flex gap-2">
                     <button onclick="profileManager.exportProfile()"
@@ -185,6 +203,100 @@ class ProfileManager {
                 </div>
             </div>
         `;
+
+        // Set up event listeners after rendering
+        this.setupFormEventListeners();
+    }
+
+    /**
+     * Set up event listeners on profile form inputs for change detection and auto-save
+     */
+    setupFormEventListeners() {
+        const inputs = [
+            { id: 'profile-name', event: 'input' },
+            { id: 'profile-assistant-name', event: 'input' },
+            { id: 'profile-style', event: 'change' },
+            { id: 'profile-length', event: 'change' }
+        ];
+
+        inputs.forEach(({ id, event }) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.addEventListener(event, () => this.markDirty());
+            }
+        });
+    }
+
+    /**
+     * Mark the form as having unsaved changes
+     */
+    markDirty() {
+        this.isDirty = true;
+        const saveContainer = document.getElementById('profile-save-container');
+        if (saveContainer) {
+            saveContainer.classList.remove('hidden');
+        }
+
+        // Debounce auto-save: save after 2 seconds of no changes
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+        }
+        this.saveTimeout = setTimeout(() => {
+            this.saveProfileWithFeedback();
+        }, 2000);
+    }
+
+    /**
+     * Mark the form as saved (no unsaved changes)
+     */
+    markClean() {
+        this.isDirty = false;
+        const saveContainer = document.getElementById('profile-save-container');
+        if (saveContainer) {
+            saveContainer.classList.add('hidden');
+        }
+
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+            this.saveTimeout = null;
+        }
+    }
+
+    /**
+     * Save profile with user feedback (toast notification)
+     */
+    async saveProfileWithFeedback() {
+        // Cancel any pending auto-save
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+            this.saveTimeout = null;
+        }
+
+        const saveBtn = document.getElementById('profile-save-btn');
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = `
+                <span class="material-symbols-outlined text-sm animate-spin">sync</span>
+                Saving...
+            `;
+        }
+
+        try {
+            await this.saveProfile();
+            this.markClean();
+            this.showToast('Profile saved successfully', 'success');
+        } catch (error) {
+            console.error('[Profile] Save failed:', error);
+            this.showToast('Failed to save profile', 'error');
+        } finally {
+            if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = `
+                    <span class="material-symbols-outlined text-sm">save</span>
+                    Save Changes
+                `;
+            }
+        }
     }
 
     getStageColor(stage) {
@@ -369,51 +481,71 @@ class ProfileManager {
 
         const updates = [];
 
+        // Build updates and cache values locally for all fields
         if (name !== undefined) {
             updates.push({ path: 'identity.preferred_name', value: name || null, operation: 'set' });
+            // Update in-memory cache
+            if (!this.profile.identity) {
+                this.profile.identity = {};
+            }
+            this.profile.identity.preferred_name = name || null;
+            console.log('[Profile] Caching preferred_name:', name || '(empty)');
         }
+
         if (assistantName !== undefined) {
             updates.push({ path: 'persona_preferences.assistant_name', value: assistantName || null, operation: 'set' });
-            // Cache the assistant name locally (ensure persona_preferences exists)
+            // Update in-memory cache
             if (!this.profile.persona_preferences) {
                 this.profile.persona_preferences = {};
             }
             this.profile.persona_preferences.assistant_name = assistantName || null;
-            console.log('[Profile] Saving assistant name to persona_preferences:', assistantName || '(default)');
+            console.log('[Profile] Caching assistant_name:', assistantName || '(default)');
         }
+
         if (style) {
             updates.push({ path: 'communication.conversation_style', value: style, operation: 'set' });
+            // Update in-memory cache
+            if (!this.profile.communication) {
+                this.profile.communication = {};
+            }
+            this.profile.communication.conversation_style = style;
+            console.log('[Profile] Caching conversation_style:', style);
         }
+
         if (length) {
             updates.push({ path: 'communication.response_length', value: length, operation: 'set' });
+            // Update in-memory cache
+            if (!this.profile.communication) {
+                this.profile.communication = {};
+            }
+            this.profile.communication.response_length = length;
+            console.log('[Profile] Caching response_length:', length);
         }
 
         if (updates.length === 0) return;
 
-        try {
-            const response = await fetch('/api/profile', {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                credentials: 'include',
-                body: JSON.stringify({
-                    updates,
-                    reason: 'User updated profile via settings'
-                })
-            });
+        const response = await fetch('/api/profile', {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                updates,
+                reason: 'User updated profile via settings'
+            })
+        });
 
-            if (response.ok) {
-                console.log('Profile saved successfully');
-                // Don't reload full profile, just update local cache
-                // The local changes are already applied above
-                // Notify app to update headers with new assistant name
-                if (window.app) {
-                    window.app.updateAssistantName(this.getAssistantName());
-                }
-            }
-        } catch (error) {
-            console.error('Failed to save profile:', error);
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || `Save failed with status ${response.status}`);
+        }
+
+        console.log('[Profile] Profile saved successfully to server');
+
+        // Notify app to update headers with new assistant name
+        if (window.app) {
+            window.app.updateAssistantName(this.getAssistantName());
         }
     }
 

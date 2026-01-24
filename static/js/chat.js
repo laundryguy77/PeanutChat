@@ -14,6 +14,40 @@ export class ChatManager {
         this.initializeMarkdown();
     }
 
+    /**
+     * Show a toast notification to the user
+     * @param {string} message - The message to display
+     * @param {string} type - 'error', 'success', 'warning', or 'info'
+     * @param {number} duration - How long to show the toast (ms)
+     */
+    showToast(message, type = 'error', duration = 5000) {
+        const colorMap = {
+            error: 'bg-red-600',
+            success: 'bg-green-600',
+            warning: 'bg-yellow-600',
+            info: 'bg-blue-600'
+        };
+        const iconMap = {
+            error: 'error',
+            success: 'check_circle',
+            warning: 'warning',
+            info: 'info'
+        };
+
+        const toast = document.createElement('div');
+        toast.className = `fixed bottom-4 right-4 ${colorMap[type] || colorMap.error} text-white px-4 py-3 rounded-lg shadow-lg z-50 flex items-center gap-2 animate-fadeIn`;
+        toast.innerHTML = `
+            <span class="material-symbols-outlined text-lg">${iconMap[type] || iconMap.error}</span>
+            <span>${message}</span>
+        `;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.classList.add('opacity-0', 'transition-opacity', 'duration-300');
+            setTimeout(() => toast.remove(), 300);
+        }, duration);
+    }
+
     initializeMarkdown() {
         if (typeof marked !== 'undefined') {
             const renderer = new marked.Renderer();
@@ -772,7 +806,14 @@ export class ChatManager {
             await this.handleSSEStream(response);
             await this.app.loadConversation(convId);
         } catch (error) {
-            // Silent fail - UI already shows error state
+            console.error('[Regenerate] Failed to regenerate response:', error);
+            this.showToast('Failed to regenerate response. Please try again.', 'error');
+            // Remove the typing indicator if it's showing
+            if (this.currentAssistantMessage) {
+                const typing = this.currentAssistantMessage.contentEl?.querySelector('.typing-indicator');
+                if (typing) typing.remove();
+                this.currentAssistantMessage.contentEl.innerHTML = '<span class="text-red-400">Failed to regenerate response.</span>';
+            }
         } finally {
             this.isStreaming = false;
             this.currentAssistantMessage = null;
@@ -814,22 +855,40 @@ export class ChatManager {
                     credentials: 'include',
                     body: JSON.stringify({ content: newContent })
                 });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `Fork failed with status ${response.status}`);
+                }
+
                 const data = await response.json();
                 if (data.id) {
                     await this.app.loadConversation(data.id);
                     await this.app.loadConversations();
+                    this.showToast('Message forked successfully', 'success', 3000);
+                } else {
+                    throw new Error('Fork response missing conversation ID');
                 }
             } else {
-                await fetch(`/api/chat/conversations/${convId}/messages/${this.editingMessageId}`, {
+                const response = await fetch(`/api/chat/conversations/${convId}/messages/${this.editingMessageId}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
                     credentials: 'include',
                     body: JSON.stringify({ content: newContent })
                 });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.detail || `Edit failed with status ${response.status}`);
+                }
+
                 await this.app.loadConversation(convId);
+                this.showToast('Message updated', 'success', 3000);
             }
         } catch (error) {
-            // Silent fail - edit operation failed
+            console.error('[Edit] Failed to save edit:', error);
+            this.showToast(`Failed to save: ${error.message}`, 'error');
+            return; // Don't close modal on error so user can retry
         }
 
         modal.classList.add('hidden');
@@ -908,11 +967,16 @@ export class ChatManager {
                         const data = JSON.parse(dataStr);
                         toolIndicator = await this.handleSSEEvent(data, toolIndicator);
                     } catch (e) {
-                        // Silent fail - malformed SSE data
+                        // Log malformed SSE data for debugging but continue processing
+                        console.warn('[SSE] Malformed SSE data, skipping:', dataStr.substring(0, 100), e);
+                        // Don't let one bad event break the entire stream
                     }
                 }
             }
         }
+
+        // Log when SSE stream completes
+        console.log('[SSE] Stream completed');
     }
 
     async handleSSEEvent(data, toolIndicator) {
@@ -955,9 +1019,14 @@ export class ChatManager {
         }
 
         // Tool result
-        if (data.result !== undefined && toolIndicator) {
+        if (data.result !== undefined) {
             const status = data.result.success ? 'complete' : 'error';
             let message = data.result.success ? 'Complete' : data.result.error;
+
+            // If toolIndicator is null (events out of order), log warning but continue processing
+            if (!toolIndicator) {
+                console.warn('[SSE] Tool result received without matching tool indicator');
+            }
 
             if (data.name === 'web_search') {
                 message = data.result.success ? `Found ${data.result.num_results} results` : data.result.error;
@@ -968,8 +1037,10 @@ export class ChatManager {
                     message = `Title: "${data.result.title}"`;
                     // Update the UI with the new title
                     document.getElementById('current-chat-title').textContent = data.result.title;
-                    // Refresh the conversation list to show the new title
-                    this.app.loadConversations();
+                    // Refresh the conversation list to show the new title (fire and forget, but log errors)
+                    this.app.loadConversations().catch(err => {
+                        console.warn('[SSE] Failed to refresh conversation list after title update:', err);
+                    });
                 } else {
                     message = data.result.error || 'Failed to set title';
                 }

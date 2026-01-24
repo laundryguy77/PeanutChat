@@ -197,9 +197,10 @@ export class SettingsManager {
         };
 
         try {
-            // Save profile first if available
-            if (typeof profileManager !== 'undefined') {
+            // Save profile first if available and has changes
+            if (typeof profileManager !== 'undefined' && profileManager.isDirty) {
                 await profileManager.saveProfile();
+                profileManager.markClean();
             }
 
             const response = await fetch('/api/settings', {
@@ -235,9 +236,9 @@ export class SettingsManager {
             // Initialize memory manager
             memoryManager.init();
 
-            // Initialize profile manager
+            // Initialize profile manager with force reload to get latest data
             if (typeof profileManager !== 'undefined') {
-                profileManager.init();
+                profileManager.init(true);  // Force reload from server
             }
         });
     }
