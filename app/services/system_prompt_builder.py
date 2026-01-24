@@ -265,48 +265,44 @@ You have access to a comprehensive user profile system. Use it to personalize yo
 """
 
     TOOL_INSTRUCTIONS = """
-## AVAILABLE TOOLS
+## AVAILABLE TOOLS (10 total)
 
 ### Memory Tools
 - **add_memory**: Store important information about the user
-  - Categories: 'preference' (likes/dislikes), 'personal' (name, job, location), 'topic' (projects, interests), 'instruction' (how they like things done)
-  - Importance: 1-10 scale (name=10, preferences=7, casual=3)
-  - CRITICAL: If user says "remember this", "don't forget", "keep in mind" -> use add_memory IMMEDIATELY
-
+  - Categories: 'preference', 'personal', 'topic', 'instruction'
+  - CRITICAL: If user says "remember this" -> use add_memory IMMEDIATELY
 - **query_memory**: Search what you know about the user
-  - Use semantic queries like "user's coding preferences" or "projects user is working on"
 
 ### Information Tools
 - **web_search**: Search the web for current information
 - **browse_website**: Visit a specific URL
-- **search_conversations**: Search past conversations with this user
+- **search_conversations**: Search past conversations
 - **search_knowledge_base**: Search user's uploaded documents
 
-### Image Generation Tools
-- **text_to_image**: Generate images from text descriptions
-  - ALWAYS use this when user asks you to "create", "generate", "make", or "draw" an image
-  - Provide detailed prompts for better results
-  - Example: "A silver Audi TT sports car, sleek design, professional automotive photography, studio lighting"
+### Image Tool
+- **image**: Generate and manipulate images (action parameter required)
+  - action="generate": Create image from text prompt
+  - action="transform": Modify existing image with prompt
+  - action="inpaint": Edit masked regions of image
+  - action="upscale": Enhance image resolution
+  - ALWAYS use when user asks to "create", "generate", "make", or "draw" an image
 
-### Video Generation Tools
-- **text_to_video**: Generate short videos from text descriptions
-- **image_to_video**: Animate a still image
+### Video Tool
+- **video**: Generate videos (action parameter required)
+  - action="generate": Create video from text description
+  - action="animate": Turn a still image into video
 
-## INFORMATION PRIORITY (highest to lowest)
-1. User's explicit statements in this conversation
-2. Memory (retrieved context about this user)
-3. Attached files in this conversation
-4. Knowledge base (uploaded documents)
-5. Previous conversations
-6. Web search results
-7. Your training knowledge (may be outdated)
+### Profile Tool
+- **user_profile**: Manage user profile (action parameter required)
+  - action="read": Load profile sections
+  - action="update": Modify profile fields
+  - action="query": Ask natural language questions about user
 
 ## TOOL USAGE RULES
-1. **Memory Priority**: Check memory before answering questions about the user
-2. **Active Learning**: When you discover important info (name, preferences), add it to memory
-3. **No Duplicates**: Don't add information already in memory
+1. **Image Requests**: When user asks to generate/create/make an image -> use `image` tool with action="generate" IMMEDIATELY
+2. **Memory Priority**: Check memory before answering questions about the user
+3. **Active Learning**: When you discover important info, add it to memory
 4. **Explicit Requests**: When user asks to remember something, add it immediately
-5. **Image Requests**: When user asks to generate/create/make an image, use text_to_image tool IMMEDIATELY - don't just describe what you would create
 """
 
     def build_prompt(
