@@ -178,12 +178,49 @@ async def full_unlock(
     )
 
 
+async def _verify_session_unlock(user_id: int, session_id: Optional[str]) -> None:
+    """Verify user has active session unlock for avatar operations.
+
+    Raises HTTPException if session unlock is not active.
+    """
+    profile_service = get_user_profile_service()
+
+    # Check Tier 1 (adult mode)
+    adult_status = await profile_service.get_adult_mode_status(user_id)
+    if not adult_status.get("enabled"):
+        raise HTTPException(
+            status_code=403,
+            detail="Enable Uncensored Mode in Settings first."
+        )
+
+    # Check Tier 2 (session-scoped full_unlock)
+    if not session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Session ID required. Please refresh the page and try again."
+        )
+
+    session_status = await profile_service.get_session_unlock_status(user_id, session_id)
+    if not session_status.get("enabled"):
+        raise HTTPException(
+            status_code=403,
+            detail="Use the /full_unlock enable command in chat first."
+        )
+
+
 @router.post("/full_unlock/generate_avatars", response_model=AvatarGenerateResponse)
 async def generate_avatar_options(
     request: AvatarGenerateRequest,
-    user: UserResponse = Depends(require_auth)
+    user: UserResponse = Depends(require_auth),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
 ):
-    """Generate 3 avatar images based on profile preferences."""
+    """Generate 3 avatar images based on profile preferences.
+
+    SECURITY: Requires active session unlock to prevent unauthorized avatar generation.
+    """
+    # Verify session unlock is active
+    await _verify_session_unlock(user.id, x_session_id)
+
     profile_service = get_user_profile_service()
     profile_data = await profile_service.get_profile(user.id)
 
@@ -297,9 +334,16 @@ async def generate_avatar_options(
 @router.post("/full_unlock/select_avatar")
 async def select_avatar(
     request: AvatarSelectRequest,
-    user: UserResponse = Depends(require_auth)
+    user: UserResponse = Depends(require_auth),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
 ):
-    """Save selected avatar to profile."""
+    """Save selected avatar to profile.
+
+    SECURITY: Requires active session unlock to prevent unauthorized profile changes.
+    """
+    # Verify session unlock is active
+    await _verify_session_unlock(user.id, x_session_id)
+
     profile_service = get_user_profile_service()
 
     # Update persona_preferences with avatar info
@@ -329,13 +373,19 @@ async def select_avatar(
 @router.post("/full_unlock/regenerate_avatars", response_model=AvatarGenerateResponse)
 async def regenerate_avatars(
     request: AvatarRegenerateRequest,
-    user: UserResponse = Depends(require_auth)
+    user: UserResponse = Depends(require_auth),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
 ):
-    """Generate new batch of avatars with adjusted prompt."""
+    """Generate new batch of avatars with adjusted prompt.
+
+    SECURITY: Requires active session unlock to prevent unauthorized avatar generation.
+    """
     # Just call generate_avatars with the adjustment as context
+    # Note: Session verification happens in generate_avatar_options
     return await generate_avatar_options(
         AvatarGenerateRequest(prompt_context=request.prompt_adjustment),
-        user
+        user,
+        x_session_id
     )
 
 

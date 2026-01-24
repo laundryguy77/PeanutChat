@@ -1,5 +1,5 @@
 """User profile API endpoints."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 import logging
@@ -97,12 +97,16 @@ async def get_adult_mode_status(
 @router.post("/enable-section")
 async def enable_section(
     request: EnableSectionRequest,
-    user: UserResponse = Depends(require_auth)
+    user: UserResponse = Depends(require_auth),
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
 ) -> Dict[str, Any]:
     """Enable or disable a sensitive section.
 
     Enabling sensitive sections requires full_unlock to be enabled first
     (via /full_unlock command after enabling adult mode in Settings). Disabling is always allowed.
+
+    SECURITY: Uses session-scoped unlock check to ensure user has actively
+    enabled full_unlock in the current session (not just historically).
     """
     if not request.user_confirmed:
         raise HTTPException(status_code=400, detail="User confirmation required")
@@ -112,12 +116,30 @@ async def enable_section(
     # Gate: Only allow enabling sensitive sections if full_unlock is enabled
     # Disabling is always allowed
     if request.enabled:
-        full_unlock_status = await service.get_full_unlock_status(user.id)
-        if not full_unlock_status.get("enabled"):
+        # Check Tier 1 (adult mode)
+        adult_status = await service.get_adult_mode_status(user.id)
+        if not adult_status.get("enabled"):
             raise HTTPException(
                 status_code=403,
-                detail="Use the /full_unlock command in chat first to enable adult content sections."
+                detail="Enable Uncensored Mode in Settings first."
             )
+
+        # Check Tier 2 (session-scoped full_unlock) for stronger security
+        if x_session_id:
+            session_status = await service.get_session_unlock_status(user.id, x_session_id)
+            if not session_status.get("enabled"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Use the /full_unlock enable command in chat first."
+                )
+        else:
+            # Fallback to database check if no session ID (less secure but backwards compatible)
+            full_unlock_status = await service.get_full_unlock_status(user.id)
+            if not full_unlock_status.get("enabled"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Use the /full_unlock command in chat first to enable adult content sections."
+                )
 
     return await service.enable_section(
         user.id,
