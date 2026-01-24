@@ -559,6 +559,25 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         if memory_count == 0 and supports_tools:
             logger.debug("[Memory] No memories retrieved - model can use add_memory tool to store important user info")
 
+        # Send debug context to frontend
+        debug_context = {
+            "system_prompt_length": len(system_prompt),
+            "system_prompt_preview": system_prompt[:500] + "..." if len(system_prompt) > 500 else system_prompt,
+            "history_count": len(history),
+            "memory_count": memory_count,
+            "tool_count": tool_count,
+            "tools": context_metadata['tools_available'][:10] if context_metadata['tools_available'] else [],
+            "memories": [m.get("content", "")[:100] for m in memory_context[:5]] if memory_context else [],
+            "model": settings.model,
+            "is_vision": is_vision,
+            "supports_tools": supports_tools,
+            "think_mode": chat_request.think or False
+        }
+        yield {
+            "event": "context",
+            "data": json.dumps(debug_context)
+        }
+
         # Track active streams for cleanup on disconnect
         active_stream = None
 
