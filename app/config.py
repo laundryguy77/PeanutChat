@@ -85,8 +85,12 @@ VIDEO_GENERATION_SPACE = os.getenv("VIDEO_GENERATION_SPACE", "Heartsync/NSFW-Unc
 ADULT_PASSCODE = os.getenv("ADULT_PASSCODE", "")
 
 # Chat streaming limits
+# Soft limits: Log warning but continue streaming (model may need extended thinking for complex problems)
 THINKING_TOKEN_LIMIT_INITIAL = int(os.getenv("THINKING_TOKEN_LIMIT_INITIAL", "3000"))
 THINKING_TOKEN_LIMIT_FOLLOWUP = int(os.getenv("THINKING_TOKEN_LIMIT_FOLLOWUP", "2000"))
+# Hard limits: True runaway detection - break stream only at this threshold (10x soft limit)
+THINKING_HARD_LIMIT_INITIAL = int(os.getenv("THINKING_HARD_LIMIT_INITIAL", "30000"))
+THINKING_HARD_LIMIT_FOLLOWUP = int(os.getenv("THINKING_HARD_LIMIT_FOLLOWUP", "20000"))
 CHAT_REQUEST_TIMEOUT = int(os.getenv("CHAT_REQUEST_TIMEOUT", "300"))  # 5 minutes
 
 # Feature availability flags (based on API key presence)

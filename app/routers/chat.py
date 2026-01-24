@@ -21,7 +21,11 @@ from app.services.tool_executor import tool_executor, create_context
 from app.services.conversation_store import conversation_store
 from app.services.file_processor import file_processor
 from app.tools.definitions import get_tools_for_model
-from app.config import get_settings, THINKING_TOKEN_LIMIT_INITIAL, THINKING_TOKEN_LIMIT_FOLLOWUP
+from app.config import (
+    get_settings,
+    THINKING_TOKEN_LIMIT_INITIAL, THINKING_TOKEN_LIMIT_FOLLOWUP,
+    THINKING_HARD_LIMIT_INITIAL, THINKING_HARD_LIMIT_FOLLOWUP
+)
 from app.models.schemas import ChatRequest
 from app.middleware.auth import require_auth
 from app.models.auth_schemas import UserResponse
@@ -591,9 +595,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             "event": "token",
                             "data": json.dumps({"thinking": msg["thinking"]})
                         }
-                        # Safety: if thinking goes on too long without content, break
-                        if thinking_token_count > THINKING_TOKEN_LIMIT_INITIAL:
-                            logger.warning(f"Thinking limit reached ({thinking_token_count} tokens) without content, breaking")
+                        # Soft limit: warn but continue (model may need extended thinking)
+                        if thinking_token_count == THINKING_TOKEN_LIMIT_INITIAL:
+                            logger.warning(f"Soft thinking limit reached ({thinking_token_count} tokens) - continuing to allow model to complete")
+                        # Hard limit: true runaway detection - break only here
+                        if thinking_token_count > THINKING_HARD_LIMIT_INITIAL:
+                            logger.error(f"Hard thinking limit reached ({thinking_token_count} tokens) - breaking stream")
                             break
 
                     # Stream content tokens
@@ -732,8 +739,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                         # Track thinking tokens to detect runaway loops
                         if msg.get("thinking"):
                             thinking_count += 1
-                            if thinking_count > THINKING_TOKEN_LIMIT_FOLLOWUP:
-                                logger.warning(f"Thinking limit reached ({thinking_count} tokens), breaking")
+                            # Soft limit: warn but continue
+                            if thinking_count == THINKING_TOKEN_LIMIT_FOLLOWUP:
+                                logger.warning(f"Soft thinking limit reached ({thinking_count} tokens) in followup - continuing")
+                            # Hard limit: true runaway detection
+                            if thinking_count > THINKING_HARD_LIMIT_FOLLOWUP:
+                                logger.error(f"Hard thinking limit reached ({thinking_count} tokens) in followup - breaking")
                                 break
                             continue  # Skip thinking tokens
 
