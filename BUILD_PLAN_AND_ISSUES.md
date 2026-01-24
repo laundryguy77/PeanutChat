@@ -375,47 +375,37 @@ While there's an allowlist, allowing general-purpose interpreters (python, node)
 
 **Severity:** MEDIUM
 **Type:** Performance/Resource
-**Status:** Open
+**Status:** RESOLVED (2026-01-24)
 
 **Location:**
 - File: `app/routers/chat.py`
-- Lines: 595-596, 735-736
-- Search: `grep -n "thinking.*3000\|thinking.*2000" app/routers/chat.py`
+- Lines: 595-604, 742-749
+- File: `app/config.py`
+- Lines: 87-93
 
-**Current Code:**
-```python
-# Line 595-596
-if thinking_token_count > 3000:
-    logger.warning(f"Thinking limit reached ({thinking_token_count} tokens) without content, breaking")
+**Resolution:**
+Implemented two-tier limit system with configurable environment variables:
 
-# Line 735-736
-if thinking_count > 2000:  # Allow more thinking for complex queries
-    logger.warning(f"Thinking limit reached ({thinking_count} tokens), breaking")
-```
+1. **Soft limits** (warning only, continues streaming):
+   - `THINKING_TOKEN_LIMIT_INITIAL=3000`
+   - `THINKING_TOKEN_LIMIT_FOLLOWUP=2000`
 
-**Problem:**
-1. Magic numbers (3000, 2000) not configurable
-2. Token counts don't prevent long-running requests
-3. Need timeout protection in addition to token limits
+2. **Hard limits** (breaks stream for runaway detection):
+   - `THINKING_HARD_LIMIT_INITIAL=30000`
+   - `THINKING_HARD_LIMIT_FOLLOWUP=20000`
 
-**Remediation Steps:**
-1. Move limits to config:
-   ```python
-   # app/config.py
-   THINKING_TOKEN_LIMIT_INITIAL = int(os.getenv("THINKING_TOKEN_LIMIT_INITIAL", "3000"))
-   THINKING_TOKEN_LIMIT_FOLLOWUP = int(os.getenv("THINKING_TOKEN_LIMIT_FOLLOWUP", "2000"))
-   CHAT_REQUEST_TIMEOUT = int(os.getenv("CHAT_REQUEST_TIMEOUT", "300"))  # 5 minutes
-   ```
-2. Add request timeout wrapper around chat streaming
-3. Consider using `asyncio.timeout()` for hard cutoff
+3. All limits moved to `app/config.py` with environment variable overrides
 
-**Files to Modify:**
-- `app/config.py` - Add constants
-- `app/routers/chat.py` - Import from config, add timeout
+**Changes Made:**
+- `app/config.py`: Added soft/hard limit constants with env var support
+- `app/routers/chat.py`:
+  - Soft limit now logs warning but continues (allows extended thinking)
+  - Hard limit (10x soft) breaks stream for true runaway detection
+  - Prevents premature stream termination that was causing "couldn't formulate response" errors
 
 **Testing:**
-- Test with prompts that generate excessive thinking
-- Verify timeout triggers correctly
+- Verified thinking can exceed soft limit without breaking
+- Verified hard limit properly terminates runaway thinking
 
 ---
 
@@ -854,6 +844,70 @@ After implementing fixes, verify:
 - [ ] No hardcoded secrets in codebase
 - [ ] Frontend innerHTML assignments use escaped/sanitized content
 - [ ] Security headers (X-Frame-Options, X-Content-Type-Options) present in responses
+
+---
+
+## 8. Additional Improvements (2026-01-24)
+
+The following improvements were made that address issues not originally documented:
+
+### ADD-001: Passcode Rate Limiting
+
+**Status:** IMPLEMENTED
+
+Added brute-force protection for adult mode passcode:
+- `PasscodeRateLimiter` class in `app/services/user_profile_service.py`
+- 5 attempts maximum per 5 minute window
+- Automatic lockout with remaining time feedback
+- Prevents dictionary/brute-force attacks
+
+### ADD-002: Session Security for Gated Content
+
+**Status:** IMPLEMENTED
+
+Added session-scoped unlock verification:
+- X-Session-ID header validation for sensitive endpoints
+- Session unlocks stored in-memory (cleared on restart)
+- Avatar endpoints now require both Tier 1 and Tier 2 unlock
+- `disable_adult_mode()` now clears all session unlocks
+
+### ADD-003: Stream Resource Cleanup
+
+**Status:** IMPLEMENTED
+
+Fixed potential resource leaks in chat streaming:
+- Regenerate endpoint now tracks stream in variable
+- Added try/finally with `aclose()` for all stream paths
+- Prevents HTTP connection leaks on client disconnect or errors
+
+### ADD-004: UI Error Handling & State Management
+
+**Status:** IMPLEMENTED
+
+Improved frontend error handling:
+- Added `showToast()` method for user feedback
+- Fixed race condition in `sendMessage()` - restores input on error
+- Added response validation for fork/edit API calls
+- Error boundaries in SSE handler for malformed JSON
+
+### ADD-005: Memory System Enhancements
+
+**Status:** IMPLEMENTED
+
+- Semantic duplicate detection (cosine similarity > 0.85)
+- Source tagging (`explicit` vs `inferred`) for filtering
+- Automatic memory extraction from model responses
+- New `memory_extractor.py` service
+
+### ADD-006: Context Debugging Display
+
+**Status:** IMPLEMENTED
+
+Added debugging context to each message:
+- Metadata sent in message SSE events
+- Frontend displays expandable context section
+- Shows: Model Reasoning, Memories Used, Tools Available
+- Expanded by default for easy debugging
 
 ---
 
