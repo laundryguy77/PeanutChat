@@ -21,7 +21,11 @@ from app.services.tool_executor import tool_executor, create_context
 from app.services.conversation_store import conversation_store
 from app.services.file_processor import file_processor
 from app.tools.definitions import get_tools_for_model
-from app.config import get_settings, THINKING_TOKEN_LIMIT_INITIAL, THINKING_TOKEN_LIMIT_FOLLOWUP
+from app.config import (
+    get_settings,
+    THINKING_TOKEN_LIMIT_INITIAL, THINKING_TOKEN_LIMIT_FOLLOWUP,
+    THINKING_HARD_LIMIT_INITIAL, THINKING_HARD_LIMIT_FOLLOWUP
+)
 from app.models.schemas import ChatRequest
 from app.middleware.auth import require_auth
 from app.models.auth_schemas import UserResponse
@@ -619,9 +623,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             "event": "token",
                             "data": json.dumps({"thinking": msg["thinking"]})
                         }
-                        # Safety: if thinking goes on too long without content, break
-                        if thinking_token_count > THINKING_TOKEN_LIMIT_INITIAL:
-                            logger.warning(f"Thinking limit reached ({thinking_token_count} tokens) without content, breaking")
+                        # Soft limit: warn but continue (model may need extended thinking)
+                        if thinking_token_count == THINKING_TOKEN_LIMIT_INITIAL:
+                            logger.warning(f"Soft thinking limit reached ({thinking_token_count} tokens) - continuing to allow model to complete")
+                        # Hard limit: true runaway detection - break only here
+                        if thinking_token_count > THINKING_HARD_LIMIT_INITIAL:
+                            logger.error(f"Hard thinking limit reached ({thinking_token_count} tokens) - breaking stream")
                             break
 
                     # Stream content tokens
@@ -760,8 +767,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                         # Track thinking tokens to detect runaway loops
                         if msg.get("thinking"):
                             thinking_count += 1
-                            if thinking_count > THINKING_TOKEN_LIMIT_FOLLOWUP:
-                                logger.warning(f"Thinking limit reached ({thinking_count} tokens), breaking")
+                            # Soft limit: warn but continue
+                            if thinking_count == THINKING_TOKEN_LIMIT_FOLLOWUP:
+                                logger.warning(f"Soft thinking limit reached ({thinking_count} tokens) in followup - continuing")
+                            # Hard limit: true runaway detection
+                            if thinking_count > THINKING_HARD_LIMIT_FOLLOWUP:
+                                logger.error(f"Hard thinking limit reached ({thinking_count} tokens) in followup - breaking")
                                 break
                             continue  # Skip thinking tokens
 
@@ -805,9 +816,38 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             "event": "message",
                             "data": json.dumps({
                                 "id": followup_msg.id,
-                                "role": "assistant"
+                                "role": "assistant",
+                                "metadata": {
+                                    "thinking_content": None,  # Thinking disabled for followups
+                                    "memories_used": context_metadata.get("memories_used"),
+                                    "tools_available": context_metadata.get("tools_available")
+                                }
                             })
                         }
+
+                    # Extract memories from followup response
+                    try:
+                        from app.services.memory_extractor import extract_memories
+                        extracted_memories = extract_memories(
+                            followup_content,
+                            chat_request.message,
+                            include_implicit=False  # Only explicit tags after tool use
+                        )
+                        if extracted_memories:
+                            memory_service = get_memory_service()
+                            for mem in extracted_memories:
+                                result = await memory_service.add_memory(
+                                    user_id=user.id,
+                                    content=mem["content"],
+                                    category=mem["category"],
+                                    importance=mem["importance"],
+                                    source=mem["source"]
+                                )
+                                if result.get("success"):
+                                    logger.info(f"Auto-saved memory from followup: {mem['content'][:50]}...")
+                    except Exception as e:
+                        logger.warning(f"Memory extraction from followup failed: {e}")
+
             else:
                 # No tool calls - add regular assistant message
                 if collected_content:
@@ -825,7 +865,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             "event": "message",
                             "data": json.dumps({
                                 "id": assistant_msg.id,
-                                "role": "assistant"
+                                "role": "assistant",
+                                "metadata": {
+                                    "thinking_content": collected_thinking if collected_thinking else None,
+                                    "memories_used": context_metadata.get("memories_used"),
+                                    "tools_available": context_metadata.get("tools_available")
+                                }
                             })
                         }
 
@@ -843,6 +888,30 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                                 )
                         except Exception as e:
                             logger.warning(f"Profile extraction failed: {e}")
+
+                    # Extract memories from model response (for all models)
+                    if collected_content:
+                        try:
+                            from app.services.memory_extractor import extract_memories
+                            extracted_memories = extract_memories(
+                                collected_content,
+                                chat_request.message,
+                                include_implicit=not supports_tools  # Only implicit for non-tool models
+                            )
+                            if extracted_memories:
+                                memory_service = get_memory_service()
+                                for mem in extracted_memories:
+                                    result = await memory_service.add_memory(
+                                        user_id=user.id,
+                                        content=mem["content"],
+                                        category=mem["category"],
+                                        importance=mem["importance"],
+                                        source=mem["source"]
+                                    )
+                                    if result.get("success"):
+                                        logger.info(f"Auto-saved memory: {mem['content'][:50]}...")
+                        except Exception as e:
+                            logger.warning(f"Memory extraction failed: {e}")
 
             # === Trigger Evaluation if Needed ===
             try:
@@ -1158,6 +1227,13 @@ async def regenerate_response(
 
         collected_content = ""
         tool_calls = []
+        regen_stream = None
+
+        # Build context metadata for debugging
+        regen_context_metadata = {
+            "memories_used": memory_context if memory_context else None,
+            "tools_available": [t["function"]["name"] for t in tools] if tools else None
+        }
 
         try:
             # Apply context window management with compaction (with user verification)
@@ -1165,12 +1241,14 @@ async def regenerate_response(
                 messages, conv_id, settings, user_id=user.id
             )
 
-            async for chunk in ollama_service.chat_stream(
+            # Store stream for cleanup
+            regen_stream = ollama_service.chat_stream(
                 messages=messages,
                 model=settings.model,
                 tools=tools,
                 options=options
-            ):
+            )
+            async for chunk in regen_stream:
                 if "message" in chunk:
                     msg = chunk["message"]
                     if msg.get("content"):
@@ -1217,14 +1295,21 @@ async def regenerate_response(
                     conv_id,
                     role="assistant",
                     content=collected_content,
-                    tool_calls=tool_calls if tool_calls else None
+                    tool_calls=tool_calls if tool_calls else None,
+                    memories_used=regen_context_metadata.get("memories_used"),
+                    tools_available=regen_context_metadata.get("tools_available")
                 )
                 if assistant_msg:
                     yield {
                         "event": "message",
                         "data": json.dumps({
                             "id": assistant_msg.id,
-                            "role": "assistant"
+                            "role": "assistant",
+                            "metadata": {
+                                "thinking_content": None,  # Regenerate doesn't use thinking
+                                "memories_used": regen_context_metadata.get("memories_used"),
+                                "tools_available": regen_context_metadata.get("tools_available")
+                            }
                         })
                     }
 
@@ -1249,6 +1334,12 @@ async def regenerate_response(
             except (BrokenPipeError, ConnectionError, ConnectionResetError):
                 pass
         finally:
+            # Clean up stream if active
+            if regen_stream is not None:
+                try:
+                    await regen_stream.aclose()
+                except Exception:
+                    pass  # Stream may already be closed
             # Clean up context-scoped resources
             tool_ctx.clear_images()
 

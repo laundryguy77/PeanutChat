@@ -74,7 +74,7 @@ ADD_MEMORY_TOOL = {
     "type": "function",
     "function": {
         "name": "add_memory",
-        "description": "Store important information about the user for future reference. Use this when learning something significant about the user's preferences, personal details, or topics they care about. CRITICAL: If the user explicitly asks you to remember something (e.g., 'remember that...', 'don't forget...', 'keep in mind...'), use this tool IMMEDIATELY without asking for confirmation.",
+        "description": "Store important information about the user for future reference. Use this when learning something significant about the user's preferences, personal details, or topics they care about. CRITICAL: If the user explicitly asks you to remember something (e.g., 'remember that...', 'don't forget...', 'keep in mind...'), use this tool IMMEDIATELY with source='explicit'.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -92,6 +92,11 @@ ADD_MEMORY_TOOL = {
                     "minimum": 1,
                     "maximum": 10,
                     "description": "How important (1-10). Name=10, preferences=7, casual mentions=3."
+                },
+                "source": {
+                    "type": "string",
+                    "enum": ["explicit", "inferred"],
+                    "description": "Set to 'explicit' if user directly asked you to remember this. Set to 'inferred' if you're proactively saving something they mentioned."
                 }
             },
             "required": ["content", "category"]

@@ -602,6 +602,30 @@ class UserProfileStore:
         }
 
     # Session-scoped unlock methods (CRITICAL for child safety)
+    #
+    # ARCHITECTURE NOTE: Dual Persistence Design
+    # ==========================================
+    # There are TWO places where full_unlock state is stored:
+    #
+    # 1. DATABASE (full_unlock_enabled column):
+    #    - Persists across server restarts and sessions
+    #    - Used for: Analytics, historical tracking, backward compatibility
+    #    - NOT the primary gate for adult content access
+    #    - Set via set_full_unlock() when user runs /full_unlock enable
+    #
+    # 2. IN-MEMORY (self._session_unlocks dict):
+    #    - Per-session, lost on server restart or tab close
+    #    - This IS the primary gate for adult content access
+    #    - New sessions start LOCKED by default (child safety requirement)
+    #    - User must explicitly run /full_unlock enable each session
+    #
+    # The chat endpoint (routers/chat.py) checks BOTH:
+    #   - adult_mode_enabled (Tier 1, database, via passcode in Settings)
+    #   - session_unlock (Tier 2, in-memory, via /full_unlock command)
+    #
+    # Only when BOTH are True does the user have access to adult content.
+    # This ensures that even if someone finds a device with adult mode enabled,
+    # they cannot access adult content without running the command.
 
     def set_session_unlock(self, user_id: int, session_id: str, enabled: bool) -> None:
         """Set unlock status for a specific session.
