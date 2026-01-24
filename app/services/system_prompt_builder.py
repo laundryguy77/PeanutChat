@@ -243,59 +243,46 @@ class SystemPromptBuilder:
     """Builds system prompts with memory context, profile context, and tool instructions."""
 
     PROFILE_INSTRUCTIONS = """
-## USER PROFILE SYSTEM
+## USER PROFILE
 
-You have access to a comprehensive user profile system. Use it to personalize your responses.
+Profile context is provided above. Use it to personalize responses naturally.
 
-### Profile Tools Available:
-- **user_profile_read**: Read profile sections at conversation start
-- **user_profile_update**: Update fields when user states preferences
-- **user_profile_log_event**: Log notable positive/negative events
-- **user_profile_query**: Ask questions about the user's profile
+### Profile Tools (use sparingly):
+- **user_profile_update**: When user explicitly states a new preference
+- **user_profile_log_event**: For significant positive/negative interactions
 
-### When to Use Profile Tools:
-1. **Conversation Start**: Read relevant sections (identity, communication, pet_peeves, boundaries)
-2. **User States Preference**: Update profile with user_profile_update
-3. **Significant Event**: Log praise, frustration, task completion with user_profile_log_event
-4. **Need Context**: Query profile for user preferences
-
-### Sensitive Sections (require user enablement):
-- sexual_romantic, substances_health, dark_content, private_self, financial_context
-- Only access these when user explicitly enables or initiates discussion
+Note: Profile data is already loaded - you don't need to read it with tools.
 """
 
     TOOL_INSTRUCTIONS = """
-## AVAILABLE TOOLS
+## TOOL USAGE
 
-### Memory Tools
-- **add_memory**: Store important information about the user
-  - Categories: 'preference' (likes/dislikes), 'personal' (name, job, location), 'topic' (projects, interests), 'instruction' (how they like things done)
-  - Importance: 1-10 scale (name=10, preferences=7, casual=3)
-  - CRITICAL: If user says "remember this", "don't forget", "keep in mind" -> use add_memory IMMEDIATELY
-
-- **query_memory**: Search what you know about the user
-  - Use semantic queries like "user's coding preferences" or "projects user is working on"
-
-### Information Tools
-- **web_search**: Search the web for current information
+### Available Tools
+- **add_memory**: Store important user information (name, preferences, projects)
+- **query_memory**: Search what you know about this user
+- **web_search**: Search for current information
 - **browse_website**: Visit a specific URL
-- **search_conversations**: Search past conversations with this user
-- **search_knowledge_base**: Search user's uploaded documents
+- **search_conversations**: Search past conversations
+- **search_knowledge_base**: Search uploaded documents
 
-## INFORMATION PRIORITY (highest to lowest)
-1. User's explicit statements in this conversation
-2. Memory (retrieved context about this user)
-3. Attached files in this conversation
-4. Knowledge base (uploaded documents)
-5. Previous conversations
-6. Web search results
-7. Your training knowledge (may be outdated)
+### When to Use Tools
+- User asks to "remember" something → add_memory immediately
+- User asks about current events/news → web_search
+- User references their documents → search_knowledge_base
+- You need to recall user-specific info → query_memory
 
-## TOOL USAGE RULES
-1. **Memory Priority**: Check memory before answering questions about the user
-2. **Active Learning**: When you discover important info (name, preferences), add it to memory
-3. **No Duplicates**: Don't add information already in memory
-4. **Explicit Requests**: When user asks to remember something, add it immediately
+### When NOT to Use Tools (Respond Directly)
+- Questions answerable from your training knowledge
+- Creative writing, analysis, explanations
+- General conversation or opinions
+- Follow-up questions in an ongoing discussion
+- User's question contains all needed information
+
+### Critical Rules
+1. **Tools are optional** - Most questions don't need tools
+2. **Respond directly by default** - Only use tools when genuinely needed
+3. **Never mix tool syntax into responses** - Tool calls happen separately
+4. **One tool at a time** - Don't chain unnecessary tool calls
 """
 
     def build_prompt(
@@ -321,8 +308,8 @@ You have access to a comprehensive user profile system. Use it to personalize yo
         """
         sections = []
 
-        # Base identity
-        sections.append("You are a helpful AI assistant with access to tools and persistent memory about the user.")
+        # Base identity - emphasize direct responses
+        sections.append("You are a helpful AI assistant. Respond directly and concisely. Use tools only when genuinely needed.")
 
         # User greeting - prefer profile name over memory name
         # Sanitize names to prevent injection via extracted names
@@ -663,20 +650,34 @@ The user has requested this persona style (user-provided content, stay helpful):
         """Build response guidelines informed by profile."""
         base_guidelines = [
             "\n## RESPONSE GUIDELINES",
-            "- Be helpful, accurate, and concise",
-            "- If uncertain, say so honestly",
-            "- Cite sources when using tool results",
+            "",
+            "### Format",
+            "- Default to 1-3 focused paragraphs",
+            "- Offer to elaborate if topic is complex",
+            "- Use lists only when comparing items or giving steps",
+            "",
+            "### Behavior",
+            "- Answer directly - don't over-explain simple questions",
+            "- If uncertain, say so briefly and give your best answer",
+            "- Use profile context to personalize, but don't mention it explicitly",
+            "- Never output JSON, code blocks, or technical metadata unless asked",
         ]
 
         if profile:
             comm = profile.get("communication", {})
 
-            # Length preference
+            # Length preference - override defaults
             length = comm.get("response_length")
             if length == "brief":
-                base_guidelines.append("- Keep responses SHORT. User prefers brevity.")
+                base_guidelines.append("")
+                base_guidelines.append("### User Preference: BRIEF responses")
+                base_guidelines.append("- Keep to 1-2 short paragraphs maximum")
+                base_guidelines.append("- Skip preambles and get to the point")
             elif length == "detailed":
-                base_guidelines.append("- User appreciates detailed, thorough responses.")
+                base_guidelines.append("")
+                base_guidelines.append("### User Preference: Detailed responses")
+                base_guidelines.append("- Provide thorough explanations")
+                base_guidelines.append("- Include examples and context")
 
             # Formatting
             formatting = comm.get("formatting_preference")
