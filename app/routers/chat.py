@@ -331,6 +331,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
     body = await request.json()
     chat_request = ChatRequest(**body)
     conv_id = request.headers.get("X-Conversation-ID")
+    logger.debug(f"[Context] Received conversation ID from header: {conv_id[:8] if conv_id else 'None'}")
 
     # Create new conversation if none specified
     if not conv_id:
@@ -383,6 +384,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
 
         # Get history in API format (with user verification)
         history = conversation_store.get_messages_for_api(conv_id, user_id=user.id)
+        logger.info(f"[Context] Loaded {len(history)} messages from conversation {conv_id[:8]}... (conv has {len(conv.messages)} stored)")
 
         # Process attached files and build enhanced message
         user_message = chat_request.message
@@ -556,6 +558,25 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         logger.info(f"[Context] Prepared metadata: memories={memory_count}, tools={tool_count}")
         if memory_count == 0 and supports_tools:
             logger.debug("[Memory] No memories retrieved - model can use add_memory tool to store important user info")
+
+        # Send debug context to frontend
+        debug_context = {
+            "system_prompt_length": len(system_prompt),
+            "system_prompt_preview": system_prompt[:500] + "..." if len(system_prompt) > 500 else system_prompt,
+            "history_count": len(history),
+            "memory_count": memory_count,
+            "tool_count": tool_count,
+            "tools": context_metadata['tools_available'][:10] if context_metadata['tools_available'] else [],
+            "memories": [m.get("content", "")[:100] for m in memory_context[:5]] if memory_context else [],
+            "model": settings.model,
+            "is_vision": is_vision,
+            "supports_tools": supports_tools,
+            "think_mode": chat_request.think or False
+        }
+        yield {
+            "event": "context",
+            "data": json.dumps(debug_context)
+        }
 
         # Track active streams for cleanup on disconnect
         active_stream = None
