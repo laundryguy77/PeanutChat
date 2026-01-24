@@ -458,6 +458,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                     settings.model
                 )
                 logger.info(f"Memory search terms: {search_terms}")
+                if not search_terms:
+                    logger.debug("[Memory] No search terms extracted - model may store new memories via add_memory tool")
 
                 # Query memories with extracted terms
                 if search_terms:
@@ -548,7 +550,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             "memories_used": memory_context if memory_context else None,
             "tools_available": [t.get("function", {}).get("name") for t in tools] if tools else None
         }
-        logger.info(f"[Context] Prepared metadata: memories={len(memory_context) if memory_context else 0}, tools={len(context_metadata['tools_available']) if context_metadata['tools_available'] else 0}")
+        # Log context summary with memory hint
+        memory_count = len(memory_context) if memory_context else 0
+        tool_count = len(context_metadata['tools_available']) if context_metadata['tools_available'] else 0
+        logger.info(f"[Context] Prepared metadata: memories={memory_count}, tools={tool_count}")
+        if memory_count == 0 and supports_tools:
+            logger.debug("[Memory] No memories retrieved - model can use add_memory tool to store important user info")
 
         # Track active streams for cleanup on disconnect
         active_stream = None

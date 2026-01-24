@@ -173,3 +173,57 @@ async def get_model_capabilities_endpoint(model_name: str):
     Note: Uses :path converter to allow model names with slashes (e.g., huihui_ai/model:tag)
     """
     return await ollama_service.get_comprehensive_capabilities(model_name)
+
+
+@router.get("/tools")
+async def list_available_tools(user: UserResponse = Depends(require_auth)) -> Dict[str, Any]:
+    """List all available tools for the current model.
+
+    This endpoint helps with debugging and understanding which tools are available
+    for the currently selected model based on its capabilities.
+    """
+    from app.tools.definitions import get_tools_for_model, ALL_TOOLS
+    from app.services.mcp_client import get_mcp_manager
+
+    settings = get_settings()
+    model = settings.model
+
+    # Get model capabilities
+    is_vision = await ollama_service.is_vision_model(model)
+    supports_tools = await ollama_service.supports_tools(model)
+
+    # Get MCP tools
+    mcp_manager = get_mcp_manager()
+    mcp_tools = mcp_manager.get_tools_as_openai_format()
+
+    # Get filtered tools list
+    filtered_tools = get_tools_for_model(
+        supports_tools=supports_tools,
+        supports_vision=is_vision,
+        mcp_tools=mcp_tools
+    )
+
+    # Extract tool details for response
+    tool_details = []
+    for tool in filtered_tools:
+        func = tool.get("function", {})
+        tool_details.append({
+            "name": func.get("name"),
+            "description": func.get("description", "")[:100] + "..." if len(func.get("description", "")) > 100 else func.get("description", ""),
+            "parameters": list(func.get("parameters", {}).get("properties", {}).keys())
+        })
+
+    # Also provide the raw tool count
+    all_builtin_count = len(ALL_TOOLS)
+    mcp_count = len(mcp_tools) if mcp_tools else 0
+
+    return {
+        "model": model,
+        "supports_tools": supports_tools,
+        "supports_vision": is_vision,
+        "total_tools": len(filtered_tools),
+        "builtin_tools": all_builtin_count,
+        "mcp_tools": mcp_count,
+        "tools": tool_details,
+        "tool_names": [t["name"] for t in tool_details]
+    }

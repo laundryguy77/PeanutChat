@@ -1383,6 +1383,7 @@ class App {
 
         if (!message && this.pendingImages.length === 0 && this.pendingFiles.length === 0) return;
 
+        // Store message data BEFORE clearing UI state
         const images = this.pendingImages.map(img => img.base64);
         const imageDataUrls = this.pendingImages.map(img => img.dataUrl);
         const files = this.pendingFiles.map(f => ({
@@ -1393,6 +1394,12 @@ class App {
         }));
         const think = this.thinkEnabled;
 
+        // Store original values in case we need to restore on error
+        const originalMessage = input.value;
+        const originalImages = [...this.pendingImages];
+        const originalFiles = [...this.pendingFiles];
+
+        // Clear UI state optimistically for better UX
         input.value = '';
         input.style.height = 'auto';
         this.pendingImages = [];
@@ -1400,8 +1407,22 @@ class App {
         this.updateImagePreviews();
         this.updateFilePreviews();
 
-        await this.chatManager.sendMessage(message, images, imageDataUrls, think, files);
-        await this.loadConversations();
+        try {
+            await this.chatManager.sendMessage(message, images, imageDataUrls, think, files);
+            // Only refresh conversations after successful send
+            await this.loadConversations();
+        } catch (error) {
+            console.error('[SendMessage] Failed to send message:', error);
+            // Restore input state on error so user doesn't lose their message
+            input.value = originalMessage;
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 192) + 'px';
+            this.pendingImages = originalImages;
+            this.pendingFiles = originalFiles;
+            this.updateImagePreviews();
+            this.updateFilePreviews();
+            // Error toast is already shown by chatManager.sendMessage
+        }
     }
 }
 
