@@ -841,14 +841,26 @@ class ToolExecutor:
         if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
+        content = args.get("content", "")
+        category = args.get("category", "general")
+        importance = args.get("importance", 5)
+
+        logger.info(f"[Memory] Model calling add_memory: category={category}, importance={importance}, content={content[:50]}...")
+
         memory_service = get_memory_service()
         result = await memory_service.add_memory(
             user_id=user_id,
-            content=args.get("content", ""),
-            category=args.get("category", "general"),
-            importance=args.get("importance", 5),
+            content=content,
+            category=category,
+            importance=importance,
             source="inferred"
         )
+
+        if result.get("success"):
+            logger.info(f"[Memory] Memory stored successfully: id={result.get('id')}")
+        else:
+            logger.warning(f"[Memory] Failed to store memory: {result.get('error')}")
+
         return result
 
     async def _execute_query_memory(
@@ -858,15 +870,21 @@ class ToolExecutor:
         if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
+        query = args.get("query", "")
+        logger.info(f"[Memory] Model calling query_memory: query={query[:50]}...")
+
         memory_service = get_memory_service()
         results = await memory_service.query_memories(
             user_id=user_id,
-            query=args.get("query", ""),
+            query=query,
             top_k=5
         )
+
+        logger.info(f"[Memory] Query returned {len(results)} memories")
+
         return {
             "success": True,
-            "query": args.get("query", ""),
+            "query": query,
             "results": results,
             "count": len(results)
         }
