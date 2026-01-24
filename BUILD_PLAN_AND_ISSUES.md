@@ -34,7 +34,7 @@ This document provides a comprehensive build plan addressing all security vulner
 
 **Severity:** CRITICAL
 **Type:** Security - Authentication Bypass
-**Status:** Open
+**Status:** RESOLVED (passcode now imported from config.ADULT_PASSCODE, set via environment variable)
 
 **Location:**
 - File: `app/services/user_profile_service.py`
@@ -459,7 +459,7 @@ Invalid base64 input causes `binascii.Error` exception. While caught by outer tr
 
 **Severity:** MEDIUM
 **Type:** Configuration
-**Status:** Open
+**Status:** RESOLVED (WEB_SEARCH_AVAILABLE/VIDEO_GENERATION_AVAILABLE flags + startup warnings in main.py)
 
 **Location:**
 - File: `app/config.py`
@@ -563,7 +563,7 @@ Debug print statements in production code instead of proper logging.
 
 **Severity:** LOW
 **Type:** Security - Defense in Depth
-**Status:** Open
+**Status:** RESOLVED (SecurityHeadersMiddleware in main.py: X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy)
 
 **Location:**
 - File: `app/main.py`
