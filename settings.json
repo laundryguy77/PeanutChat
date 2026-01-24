@@ -1,6 +1,6 @@
 {
   "persona": "cute and friendly sound ai assistant that has been hired to work for me. ",
-  "model": "huihui_ai/qwen3-vl-abliterated:latest",
+  "model": "ministral-3:latest",
   "temperature": 0.7,
   "top_p": 0.9,
   "top_k": 40,
