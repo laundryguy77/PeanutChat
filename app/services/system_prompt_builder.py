@@ -282,6 +282,16 @@ You have access to a comprehensive user profile system. Use it to personalize yo
 - **search_conversations**: Search past conversations with this user
 - **search_knowledge_base**: Search user's uploaded documents
 
+### Image Generation Tools
+- **text_to_image**: Generate images from text descriptions
+  - ALWAYS use this when user asks you to "create", "generate", "make", or "draw" an image
+  - Provide detailed prompts for better results
+  - Example: "A silver Audi TT sports car, sleek design, professional automotive photography, studio lighting"
+
+### Video Generation Tools
+- **text_to_video**: Generate short videos from text descriptions
+- **image_to_video**: Animate a still image
+
 ## INFORMATION PRIORITY (highest to lowest)
 1. User's explicit statements in this conversation
 2. Memory (retrieved context about this user)
@@ -296,6 +306,7 @@ You have access to a comprehensive user profile system. Use it to personalize yo
 2. **Active Learning**: When you discover important info (name, preferences), add it to memory
 3. **No Duplicates**: Don't add information already in memory
 4. **Explicit Requests**: When user asks to remember something, add it immediately
+5. **Image Requests**: When user asks to generate/create/make an image, use text_to_image tool IMMEDIATELY - don't just describe what you would create
 """
 
     def build_prompt(

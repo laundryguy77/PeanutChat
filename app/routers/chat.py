@@ -331,6 +331,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
     body = await request.json()
     chat_request = ChatRequest(**body)
     conv_id = request.headers.get("X-Conversation-ID")
+    logger.debug(f"[Context] Received conversation ID from header: {conv_id[:8] if conv_id else 'None'}")
 
     # Create new conversation if none specified
     if not conv_id:
@@ -383,6 +384,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
 
         # Get history in API format (with user verification)
         history = conversation_store.get_messages_for_api(conv_id, user_id=user.id)
+        logger.info(f"[Context] Loaded {len(history)} messages from conversation {conv_id[:8]}... (conv has {len(conv.messages)} stored)")
 
         # Process attached files and build enhanced message
         user_message = chat_request.message
