@@ -326,7 +326,16 @@ If `ToolExecutionContext` is not created, the code falls back to instance variab
 
 **Severity:** HIGH
 **Type:** Security - Command Injection
-**Status:** Open (needs review)
+**Status:** RESOLVED (2026-01-24) - Extensive security measures in place + API-level validation added
+
+**Security Measures:**
+1. Command allowlist (ALLOWED_MCP_COMMANDS) - only trusted commands
+2. Argument validation (_validate_args) - blocks shell metacharacters, command substitution
+3. Environment variable allowlist/blocklist - prevents LD_PRELOAD attacks
+4. Path validation - resolves to absolute path, checks symlink attacks
+5. Resource limits - memory (512MB), CPU (300s), file descriptors (256)
+6. **NEW:** API-level validation in add_server endpoint - rejects invalid configs before storing
+7. **NEW:** Audit logging for all MCP connections and tool executions
 
 **Location:**
 - File: `app/services/mcp_client.py`
