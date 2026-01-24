@@ -1141,6 +1141,7 @@ async def regenerate_response(
 
         collected_content = ""
         tool_calls = []
+        regen_stream = None
 
         try:
             # Apply context window management with compaction (with user verification)
@@ -1148,12 +1149,14 @@ async def regenerate_response(
                 messages, conv_id, settings, user_id=user.id
             )
 
-            async for chunk in ollama_service.chat_stream(
+            # Store stream for cleanup
+            regen_stream = ollama_service.chat_stream(
                 messages=messages,
                 model=settings.model,
                 tools=tools,
                 options=options
-            ):
+            )
+            async for chunk in regen_stream:
                 if "message" in chunk:
                     msg = chunk["message"]
                     if msg.get("content"):
@@ -1232,6 +1235,12 @@ async def regenerate_response(
             except (BrokenPipeError, ConnectionError, ConnectionResetError):
                 pass
         finally:
+            # Clean up stream if active
+            if regen_stream is not None:
+                try:
+                    await regen_stream.aclose()
+                except Exception:
+                    pass  # Stream may already be closed
             # Clean up context-scoped resources
             tool_ctx.clear_images()
 
