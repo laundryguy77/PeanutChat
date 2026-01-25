@@ -458,6 +458,121 @@ class EdgeTTSBackend(TTSBackend):
 
 
 # =============================================================================
+# Qwen3-TTS Backend (High quality, GPU)
+# =============================================================================
+
+class Qwen3TTSBackend(TTSBackend):
+    """
+    Qwen3-TTS backend - high quality neural TTS.
+
+    Model: Qwen/Qwen3-TTS-12Hz-0.6B
+    VRAM: ~2GB
+
+    Install: pip install transformers torch
+    """
+
+    name = "qwen3"
+    supports_streaming = False
+    supports_voices = False
+    supported_formats = ["wav"]
+
+    async def initialize(self) -> None:
+        """Load Qwen3-TTS model."""
+        logger.info(f"Loading Qwen3-TTS model {self.model_name} on {self.device}")
+
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoProcessor
+
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_name,
+                trust_remote_code=True
+            )
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                trust_remote_code=True,
+                torch_dtype=torch.bfloat16,
+                device_map=self.device
+            )
+            logger.info("Qwen3-TTS model loaded successfully")
+
+        except ImportError:
+            logger.error("transformers/torch not installed. Install with: pip install transformers torch")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to load Qwen3-TTS model: {e}")
+            raise
+
+    async def generate(self, text: str, config: TTSConfig) -> bytes:
+        """Generate audio using Qwen3-TTS."""
+        await self.ensure_initialized()
+
+        import torch
+        import numpy as np
+        import wave
+
+        # Prepare input
+        inputs = self.processor(
+            text=text,
+            return_tensors="pt"
+        ).to(self.model.device)
+
+        # Generate audio tokens
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=4096,
+                do_sample=True,
+                temperature=0.7
+            )
+
+        # Decode audio
+        audio = self.processor.decode(
+            outputs[0],
+            skip_special_tokens=True
+        )
+
+        # Default sample rate for Qwen3-TTS
+        sample_rate = 24000
+
+        # Apply speed adjustment via resampling
+        if config.speed != 1.0 and 0.5 <= config.speed <= 2.0:
+            from scipy import signal
+            new_length = int(len(audio) / config.speed)
+            audio = signal.resample(audio, new_length)
+
+        # Convert to int16 WAV
+        audio_int16 = (np.array(audio) * 32767).astype(np.int16)
+
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(int(sample_rate * config.speed))
+            wav_file.writeframes(audio_int16.tobytes())
+
+        buffer.seek(0)
+        return buffer.read()
+
+    async def get_voices(self) -> List[TTSVoice]:
+        return [TTSVoice("default", "Qwen3 Default", "multi")]
+
+    async def cleanup(self) -> None:
+        if hasattr(self, 'model') and self.model is not None:
+            import torch
+            del self.model
+            self.model = None
+            torch.cuda.empty_cache()
+
+        if hasattr(self, 'processor'):
+            del self.processor
+            self.processor = None
+
+        self._initialized = False
+        logger.info("Qwen3-TTS model unloaded")
+
+
+# =============================================================================
 # Backend Registry
 # =============================================================================
 
@@ -466,6 +581,7 @@ TTS_BACKENDS: Dict[str, type] = {
     "coqui": CoquiTTSBackend,
     "kokoro": KokoroTTSBackend,
     "edge": EdgeTTSBackend,
+    "qwen3": Qwen3TTSBackend,
 }
 
 

@@ -1,138 +1,93 @@
-"""TTS service using Qwen3-TTS for text-to-speech streaming."""
+"""
+TTS Service - Text-to-speech with swappable backends.
+
+Uses the backend abstraction from tts_backends.py.
+Backend selection via TTS_BACKEND environment variable.
+"""
 import logging
 import asyncio
-import io
 from typing import Optional, AsyncGenerator
-from concurrent.futures import ThreadPoolExecutor
 
 from app import config
+from app.services.tts_backends import (
+    get_tts_backend_class,
+    list_available_backends,
+    TTSBackend,
+    TTSConfig,
+)
 
 logger = logging.getLogger(__name__)
 
-# Thread pool for running TTS in background
-_tts_executor: Optional[ThreadPoolExecutor] = None
+# Singleton backend instance
+_tts_backend: Optional[TTSBackend] = None
+_backend_lock = asyncio.Lock()
 
 
-def _get_tts_executor() -> ThreadPoolExecutor:
-    """Get or create the TTS thread pool executor."""
-    global _tts_executor
-    if _tts_executor is None:
-        _tts_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tts")
-    return _tts_executor
+async def _get_or_create_backend() -> Optional[TTSBackend]:
+    """Get or create the TTS backend based on config."""
+    global _tts_backend
+
+    if _tts_backend is not None:
+        return _tts_backend
+
+    async with _backend_lock:
+        # Double-check after acquiring lock
+        if _tts_backend is not None:
+            return _tts_backend
+
+        if not config.VOICE_ENABLED:
+            logger.warning("Voice features disabled. Set VOICE_ENABLED=true to enable.")
+            return None
+
+        backend_name = config.TTS_BACKEND.lower()
+        model_name = config.TTS_MODEL
+        device = config.TTS_DEVICE
+
+        try:
+            # Get backend class
+            backend_class = get_tts_backend_class(backend_name)
+
+            # Use backend's default model if "default" specified
+            if model_name == "default":
+                model_name = _get_default_model(backend_name)
+
+            logger.info(f"Initializing TTS backend: {backend_name} (model={model_name}, device={device})")
+
+            # Create and initialize backend
+            backend = backend_class(model_name=model_name, device=device)
+            await backend.ensure_initialized()
+
+            _tts_backend = backend
+            logger.info(f"TTS backend ready: {backend_name}")
+            return _tts_backend
+
+        except ValueError as e:
+            logger.error(f"Invalid TTS backend: {e}")
+            logger.info(f"Available backends: {list_available_backends()}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to initialize TTS backend '{backend_name}': {e}")
+            return None
 
 
-class QwenTTSService:
-    """TTS service using Qwen3-TTS model."""
+def _get_default_model(backend_name: str) -> str:
+    """Get default model for each backend."""
+    defaults = {
+        "edge": "en-US-AriaNeural",
+        "piper": "en_US-lessac-medium",
+        "coqui": "tts_models/en/ljspeech/tacotron2-DDC",
+        "kokoro": "kokoro-v0_19.onnx",
+        "qwen3": "Qwen/Qwen3-TTS-12Hz-0.6B",
+    }
+    return defaults.get(backend_name, "default")
 
-    def __init__(self):
-        self._model = None
-        self._processor = None
-        self._initialized = False
-        self._init_lock = asyncio.Lock()
 
-    async def _ensure_initialized(self):
-        """Lazy initialization of TTS model."""
-        if self._initialized:
-            return True
+class TTSService:
+    """
+    TTS Service wrapper - maintains backward-compatible API.
 
-        async with self._init_lock:
-            if self._initialized:
-                return True
-
-            if not config.VOICE_ENABLED:
-                logger.warning("Voice features are disabled. Set VOICE_ENABLED=true to enable.")
-                return False
-
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(_get_tts_executor(), self._load_model)
-                self._initialized = True
-                logger.info(f"TTS model loaded: {config.TTS_MODEL} on {config.TTS_DEVICE}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to load TTS model: {e}")
-                return False
-
-    def _load_model(self):
-        """Load the TTS model (runs in thread pool)."""
-        import torch
-        from transformers import AutoModelForCausalLM, AutoProcessor
-
-        logger.info(f"Loading TTS model {config.TTS_MODEL}...")
-
-        self._processor = AutoProcessor.from_pretrained(
-            config.TTS_MODEL,
-            trust_remote_code=True
-        )
-        self._model = AutoModelForCausalLM.from_pretrained(
-            config.TTS_MODEL,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            device_map=config.TTS_DEVICE
-        )
-
-    def _generate_audio_sync(
-        self,
-        text: str,
-        voice: str = "default",
-        speed: float = 1.0
-    ) -> bytes:
-        """Generate audio from text (sync, runs in thread pool)."""
-        import torch
-        import numpy as np
-
-        if not self._model or not self._processor:
-            raise RuntimeError("TTS model not loaded")
-
-        # Truncate text to max length
-        if len(text) > config.VOICE_MAX_TTS_LENGTH:
-            text = text[:config.VOICE_MAX_TTS_LENGTH]
-            logger.warning(f"TTS text truncated to {config.VOICE_MAX_TTS_LENGTH} chars")
-
-        # Prepare input
-        inputs = self._processor(
-            text=text,
-            return_tensors="pt"
-        ).to(self._model.device)
-
-        # Generate audio tokens
-        with torch.no_grad():
-            outputs = self._model.generate(
-                **inputs,
-                max_new_tokens=4096,
-                do_sample=True,
-                temperature=0.7
-            )
-
-        # Decode audio
-        audio = self._processor.decode(
-            outputs[0],
-            skip_special_tokens=True
-        )
-
-        # Convert to WAV bytes
-        sample_rate = 24000  # Qwen3-TTS default sample rate
-
-        # Apply speed adjustment
-        if speed != 1.0 and 0.5 <= speed <= 2.0:
-            # Resample for speed change
-            from scipy import signal
-            new_length = int(len(audio) / speed)
-            audio = signal.resample(audio, new_length)
-
-        # Convert to int16 WAV
-        audio_int16 = (audio * 32767).astype(np.int16)
-
-        # Create WAV file in memory
-        wav_buffer = io.BytesIO()
-        import wave
-        with wave.open(wav_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(int(sample_rate * speed))
-            wav_file.writeframes(audio_int16.tobytes())
-
-        return wav_buffer.getvalue()
+    Delegates to the configured backend.
+    """
 
     async def generate_audio(
         self,
@@ -140,20 +95,32 @@ class QwenTTSService:
         voice: str = "default",
         speed: float = 1.0
     ) -> Optional[bytes]:
-        """Generate audio from text asynchronously."""
-        if not await self._ensure_initialized():
+        """
+        Generate audio from text.
+
+        Args:
+            text: Text to synthesize
+            voice: Voice ID (backend-specific)
+            speed: Playback speed multiplier (0.5-2.0)
+
+        Returns:
+            Audio bytes (WAV or MP3 depending on backend) or None on error
+        """
+        backend = await _get_or_create_backend()
+        if backend is None:
             return None
 
+        # Enforce text length limit
+        if len(text) > config.VOICE_MAX_TTS_LENGTH:
+            text = text[:config.VOICE_MAX_TTS_LENGTH]
+            logger.warning(f"TTS text truncated to {config.VOICE_MAX_TTS_LENGTH} chars")
+
         try:
-            loop = asyncio.get_event_loop()
-            audio_bytes = await loop.run_in_executor(
-                _get_tts_executor(),
-                self._generate_audio_sync,
-                text,
-                voice,
-                speed
+            tts_config = TTSConfig(
+                voice=voice,
+                speed=speed,
             )
-            return audio_bytes
+            return await backend.generate(text, tts_config)
         except Exception as e:
             logger.error(f"TTS generation failed: {e}")
             return None
@@ -165,47 +132,80 @@ class QwenTTSService:
         speed: float = 1.0,
         chunk_size: int = 4096
     ) -> AsyncGenerator[bytes, None]:
-        """Generate audio as a stream of chunks."""
-        audio_bytes = await self.generate_audio(text, voice, speed)
-        if audio_bytes:
-            # Yield in chunks for streaming
-            for i in range(0, len(audio_bytes), chunk_size):
-                yield audio_bytes[i:i + chunk_size]
+        """
+        Generate audio as a stream of chunks.
+
+        Args:
+            text: Text to synthesize
+            voice: Voice ID
+            speed: Playback speed
+            chunk_size: Bytes per chunk (for non-streaming backends)
+
+        Yields:
+            Audio byte chunks
+        """
+        backend = await _get_or_create_backend()
+        if backend is None:
+            return
+
+        if len(text) > config.VOICE_MAX_TTS_LENGTH:
+            text = text[:config.VOICE_MAX_TTS_LENGTH]
+
+        tts_config = TTSConfig(voice=voice, speed=speed)
+
+        try:
+            if backend.supports_streaming:
+                # Use native streaming
+                async for chunk in backend.generate_stream(text, tts_config):
+                    yield chunk
+            else:
+                # Fall back to chunked delivery
+                audio = await backend.generate(text, tts_config)
+                if audio:
+                    for i in range(0, len(audio), chunk_size):
+                        yield audio[i:i + chunk_size]
+        except Exception as e:
+            logger.error(f"TTS streaming failed: {e}")
+
+    async def get_voices(self):
+        """Get available voices for current backend."""
+        backend = await _get_or_create_backend()
+        if backend is None:
+            return []
+
+        try:
+            return await backend.get_voices()
+        except Exception as e:
+            logger.error(f"Failed to get voices: {e}")
+            return []
 
     async def cleanup(self):
-        """Clean up TTS resources."""
-        if self._model is not None:
-            import torch
-            del self._model
-            self._model = None
-            torch.cuda.empty_cache()
-            logger.info("TTS model unloaded")
-
-        if self._processor is not None:
-            del self._processor
-            self._processor = None
-
-        self._initialized = False
+        """Release backend resources."""
+        global _tts_backend
+        if _tts_backend is not None:
+            try:
+                await _tts_backend.cleanup()
+            except Exception as e:
+                logger.error(f"TTS cleanup error: {e}")
+            _tts_backend = None
+            logger.info("TTS service cleaned up")
 
 
-# Singleton instance
-_tts_service: Optional[QwenTTSService] = None
+# Singleton service instance
+_tts_service: Optional[TTSService] = None
 
 
-def get_tts_service() -> QwenTTSService:
+def get_tts_service() -> TTSService:
     """Get the global TTS service instance."""
     global _tts_service
     if _tts_service is None:
-        _tts_service = QwenTTSService()
+        _tts_service = TTSService()
     return _tts_service
 
 
 async def cleanup_tts_service():
     """Clean up the TTS service on shutdown."""
-    global _tts_service, _tts_executor
+    global _tts_service
     if _tts_service is not None:
         await _tts_service.cleanup()
         _tts_service = None
-    if _tts_executor is not None:
-        _tts_executor.shutdown(wait=False)
-        _tts_executor = None

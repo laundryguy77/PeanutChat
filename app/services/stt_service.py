@@ -1,104 +1,78 @@
-"""STT service using Whisper for speech-to-text transcription."""
+"""
+STT Service - Speech-to-text with swappable backends.
+
+Uses the backend abstraction from stt_backends.py.
+Backend selection via STT_BACKEND environment variable.
+"""
 import logging
 import asyncio
-import tempfile
-import os
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
 
 from app import config
+from app.services.stt_backends import (
+    get_stt_backend_class,
+    list_available_backends,
+    STTBackend,
+    STTConfig,
+    TranscriptionResult,
+)
 
 logger = logging.getLogger(__name__)
 
-# Thread pool for running STT in background
-_stt_executor: Optional[ThreadPoolExecutor] = None
+# Singleton backend instance
+_stt_backend: Optional[STTBackend] = None
+_backend_lock = asyncio.Lock()
 
 
-def _get_stt_executor() -> ThreadPoolExecutor:
-    """Get or create the STT thread pool executor."""
-    global _stt_executor
-    if _stt_executor is None:
-        _stt_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="stt")
-    return _stt_executor
+async def _get_or_create_backend() -> Optional[STTBackend]:
+    """Get or create the STT backend based on config."""
+    global _stt_backend
 
+    if _stt_backend is not None:
+        return _stt_backend
 
-class WhisperSTTService:
-    """STT service using OpenAI Whisper model."""
+    async with _backend_lock:
+        # Double-check after acquiring lock
+        if _stt_backend is not None:
+            return _stt_backend
 
-    def __init__(self):
-        self._model = None
-        self._initialized = False
-        self._init_lock = asyncio.Lock()
+        if not config.VOICE_ENABLED:
+            logger.warning("Voice features disabled. Set VOICE_ENABLED=true to enable.")
+            return None
 
-    async def _ensure_initialized(self):
-        """Lazy initialization of Whisper model."""
-        if self._initialized:
-            return True
-
-        async with self._init_lock:
-            if self._initialized:
-                return True
-
-            if not config.VOICE_ENABLED:
-                logger.warning("Voice features are disabled. Set VOICE_ENABLED=true to enable.")
-                return False
-
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(_get_stt_executor(), self._load_model)
-                self._initialized = True
-                logger.info(f"STT model loaded: whisper-{config.STT_MODEL} on {config.STT_DEVICE}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to load STT model: {e}")
-                return False
-
-    def _load_model(self):
-        """Load the Whisper model (runs in thread pool)."""
-        import whisper
-
-        logger.info(f"Loading Whisper model {config.STT_MODEL}...")
-
-        # Determine device
+        backend_name = config.STT_BACKEND.lower()
+        model_name = config.STT_MODEL
         device = config.STT_DEVICE
-        if device.startswith("cuda"):
-            import torch
-            if not torch.cuda.is_available():
-                logger.warning("CUDA not available, falling back to CPU for STT")
-                device = "cpu"
 
-        self._model = whisper.load_model(
-            config.STT_MODEL,
-            device=device
-        )
+        try:
+            # Get backend class
+            backend_class = get_stt_backend_class(backend_name)
 
-    def _transcribe_sync(
-        self,
-        audio_path: str,
-        language: str = "en"
-    ) -> dict:
-        """Transcribe audio file (sync, runs in thread pool)."""
-        if not self._model:
-            raise RuntimeError("STT model not loaded")
+            logger.info(f"Initializing STT backend: {backend_name} (model={model_name}, device={device})")
 
-        result = self._model.transcribe(
-            audio_path,
-            language=language if language != "auto" else None,
-            task="transcribe"
-        )
+            # Create and initialize backend
+            backend = backend_class(model_name=model_name, device=device)
+            await backend.ensure_initialized()
 
-        return {
-            "text": result["text"].strip(),
-            "language": result.get("language", language),
-            "segments": [
-                {
-                    "start": seg["start"],
-                    "end": seg["end"],
-                    "text": seg["text"].strip()
-                }
-                for seg in result.get("segments", [])
-            ]
-        }
+            _stt_backend = backend
+            logger.info(f"STT backend ready: {backend_name}")
+            return _stt_backend
+
+        except ValueError as e:
+            logger.error(f"Invalid STT backend: {e}")
+            logger.info(f"Available backends: {list_available_backends()}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to initialize STT backend '{backend_name}': {e}")
+            return None
+
+
+class STTService:
+    """
+    STT Service wrapper - maintains backward-compatible API.
+
+    Delegates to the configured backend.
+    """
 
     async def transcribe(
         self,
@@ -106,62 +80,61 @@ class WhisperSTTService:
         language: str = "en",
         format: str = "wav"
     ) -> Optional[dict]:
-        """Transcribe audio data asynchronously.
+        """
+        Transcribe audio data to text.
 
         Args:
             audio_data: Raw audio bytes
-            language: Language code (e.g., "en", "es", "auto")
-            format: Audio format ("wav", "mp3", "webm", etc.)
+            language: Language code (e.g., "en", "es", "auto" for auto-detect)
+            format: Audio format hint ("wav", "mp3", "webm", etc.)
 
         Returns:
             Dict with 'text', 'language', and 'segments' or None on error
         """
-        if not await self._ensure_initialized():
+        backend = await _get_or_create_backend()
+        if backend is None:
             return None
 
-        # Check audio length (approximate based on file size)
-        # Rough estimate: 1 second of 16kHz 16-bit mono audio = ~32KB
+        # Check audio length (rough estimate: 1 sec of 16kHz 16-bit mono ~ 32KB)
         max_bytes = config.VOICE_MAX_AUDIO_LENGTH * 32000
         if len(audio_data) > max_bytes:
             logger.warning(f"Audio too long, truncating to {config.VOICE_MAX_AUDIO_LENGTH}s")
             audio_data = audio_data[:max_bytes]
 
-        # Write to temp file (Whisper requires file path)
-        temp_path = None
         try:
-            with tempfile.NamedTemporaryFile(
-                suffix=f".{format}",
-                delete=False
-            ) as f:
-                f.write(audio_data)
-                temp_path = f.name
-
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                _get_stt_executor(),
-                self._transcribe_sync,
-                temp_path,
-                language
+            stt_config = STTConfig(
+                language=None if language == "auto" else language,
+                task="transcribe",
+                word_timestamps=False,
             )
-            return result
+
+            result: TranscriptionResult = await backend.transcribe(audio_data, stt_config)
+
+            # Convert to dict for backward compatibility
+            return {
+                "text": result.text,
+                "language": result.language,
+                "segments": [
+                    {
+                        "start": seg.get("start", 0),
+                        "end": seg.get("end", 0),
+                        "text": seg.get("word", seg.get("text", "")),
+                    }
+                    for seg in (result.segments or [])
+                ],
+            }
 
         except Exception as e:
             logger.error(f"STT transcription failed: {e}")
             return None
-
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except Exception:
-                    pass
 
     async def transcribe_file(
         self,
         file_path: str,
         language: str = "en"
     ) -> Optional[dict]:
-        """Transcribe an audio file.
+        """
+        Transcribe an audio file.
 
         Args:
             file_path: Path to audio file
@@ -170,57 +143,47 @@ class WhisperSTTService:
         Returns:
             Dict with 'text', 'language', and 'segments' or None on error
         """
-        if not await self._ensure_initialized():
-            return None
+        import os
 
         if not os.path.exists(file_path):
             logger.error(f"Audio file not found: {file_path}")
             return None
 
         try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                _get_stt_executor(),
-                self._transcribe_sync,
-                file_path,
-                language
-            )
-            return result
-
+            with open(file_path, "rb") as f:
+                audio_data = f.read()
+            return await self.transcribe(audio_data, language)
         except Exception as e:
-            logger.error(f"STT transcription failed: {e}")
+            logger.error(f"Failed to read audio file: {e}")
             return None
 
     async def cleanup(self):
-        """Clean up STT resources."""
-        if self._model is not None:
-            import torch
-            del self._model
-            self._model = None
-            torch.cuda.empty_cache()
-            logger.info("STT model unloaded")
-
-        self._initialized = False
-
-
-# Singleton instance
-_stt_service: Optional[WhisperSTTService] = None
+        """Release backend resources."""
+        global _stt_backend
+        if _stt_backend is not None:
+            try:
+                await _stt_backend.cleanup()
+            except Exception as e:
+                logger.error(f"STT cleanup error: {e}")
+            _stt_backend = None
+            logger.info("STT service cleaned up")
 
 
-def get_stt_service() -> WhisperSTTService:
+# Singleton service instance
+_stt_service: Optional[STTService] = None
+
+
+def get_stt_service() -> STTService:
     """Get the global STT service instance."""
     global _stt_service
     if _stt_service is None:
-        _stt_service = WhisperSTTService()
+        _stt_service = STTService()
     return _stt_service
 
 
 async def cleanup_stt_service():
     """Clean up the STT service on shutdown."""
-    global _stt_service, _stt_executor
+    global _stt_service
     if _stt_service is not None:
         await _stt_service.cleanup()
         _stt_service = None
-    if _stt_executor is not None:
-        _stt_executor.shutdown(wait=False)
-        _stt_executor = None

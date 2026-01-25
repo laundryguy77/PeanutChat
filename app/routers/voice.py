@@ -275,8 +275,12 @@ async def voice_status(
     """Get voice feature status."""
     return {
         "enabled": config.VOICE_ENABLED,
+        "tts_backend": config.TTS_BACKEND if config.VOICE_ENABLED else None,
         "tts_model": config.TTS_MODEL if config.VOICE_ENABLED else None,
+        "tts_device": config.TTS_DEVICE if config.VOICE_ENABLED else None,
+        "stt_backend": config.STT_BACKEND if config.VOICE_ENABLED else None,
         "stt_model": config.STT_MODEL if config.VOICE_ENABLED else None,
+        "stt_device": config.STT_DEVICE if config.VOICE_ENABLED else None,
         "max_audio_length": config.VOICE_MAX_AUDIO_LENGTH,
         "max_tts_length": config.VOICE_MAX_TTS_LENGTH
     }

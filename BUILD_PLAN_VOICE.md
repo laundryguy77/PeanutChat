@@ -2,7 +2,7 @@
 
 ## Document Information
 - **Feature:** Voice Integration (TTS + STT)
-- **Version:** 2.1 (Implemented)
+- **Version:** 2.2 (Backend Wiring Fixed)
 - **Last Updated:** 2026-01-25
 - **Status:** IMPLEMENTED
 
@@ -16,6 +16,7 @@
 | 1.1 | 2026-01-25 | Audit corrections applied |
 | 2.0 | 2026-01-25 | Added backend abstraction for model swapping |
 | 2.1 | 2026-01-25 | Implementation complete |
+| 2.2 | 2026-01-25 | Fixed: Services now use backend abstraction (was hardcoded); added Qwen3 backend |
 
 ---
 

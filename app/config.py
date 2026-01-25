@@ -97,20 +97,6 @@ CHAT_REQUEST_TIMEOUT = int(os.getenv("CHAT_REQUEST_TIMEOUT", "300"))  # 5 minute
 # This model runs in background after responses to extract memories and profile updates
 EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "qwen2.5-coder:3b")
 
-# Voice Configuration
-VOICE_ENABLED = os.getenv("VOICE_ENABLED", "false").lower() == "true"
-TTS_MODEL = os.getenv("TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B")
-TTS_DEVICE = os.getenv("TTS_DEVICE", "cuda:1")
-STT_MODEL = os.getenv("STT_MODEL", "small")
-STT_DEVICE = os.getenv("STT_DEVICE", "cuda:1")
-VOICE_MAX_AUDIO_LENGTH = int(os.getenv("VOICE_MAX_AUDIO_LENGTH", "60"))  # seconds
-VOICE_MAX_TTS_LENGTH = int(os.getenv("VOICE_MAX_TTS_LENGTH", "5000"))  # characters
-
-# Feature availability flags (based on API key presence)
-WEB_SEARCH_AVAILABLE = bool(BRAVE_SEARCH_API_KEY)
-VIDEO_GENERATION_AVAILABLE = bool(HF_TOKEN)
-VOICE_AVAILABLE = VOICE_ENABLED  # Voice requires explicit enablement
-
 # =============================================================================
 # Voice Features (TTS/STT)
 # =============================================================================
@@ -119,16 +105,25 @@ VOICE_AVAILABLE = VOICE_ENABLED  # Voice requires explicit enablement
 VOICE_ENABLED = os.getenv("VOICE_ENABLED", "false").lower() == "true"
 
 # TTS Configuration
-# Available backends: edge (online, free), piper (offline, fast), coqui (high quality), kokoro
+# Available backends: qwen3 (high quality, GPU), edge (online, free), piper (offline, fast), coqui, kokoro
 TTS_BACKEND = os.getenv("TTS_BACKEND", "edge")
-TTS_MODEL = os.getenv("TTS_MODEL", "default")
-TTS_DEVICE = os.getenv("TTS_DEVICE", "cpu")
+TTS_MODEL = os.getenv("TTS_MODEL", "default")  # "default" uses backend's default, or specify model name
+TTS_DEVICE = os.getenv("TTS_DEVICE", "cpu")  # "cuda:0", "cuda:1", or "cpu"
 
 # STT Configuration
 # Available backends: faster_whisper (recommended), whisper, vosk (offline)
 STT_BACKEND = os.getenv("STT_BACKEND", "faster_whisper")
-STT_MODEL = os.getenv("STT_MODEL", "small")
+STT_MODEL = os.getenv("STT_MODEL", "small")  # whisper model size: tiny, base, small, medium, large
 STT_DEVICE = os.getenv("STT_DEVICE", "cpu")
+
+# Voice limits
+VOICE_MAX_AUDIO_LENGTH = int(os.getenv("VOICE_MAX_AUDIO_LENGTH", "60"))  # seconds for STT
+VOICE_MAX_TTS_LENGTH = int(os.getenv("VOICE_MAX_TTS_LENGTH", "5000"))  # characters for TTS
+
+# Feature availability flags (based on API key presence)
+WEB_SEARCH_AVAILABLE = bool(BRAVE_SEARCH_API_KEY)
+VIDEO_GENERATION_AVAILABLE = bool(HF_TOKEN)
+VOICE_AVAILABLE = VOICE_ENABLED  # Voice requires explicit enablement
 
 # Conversations directory (for JSON file storage)
 CONVERSATIONS_DIR = os.getenv("CONVERSATIONS_DIR", "conversations")
