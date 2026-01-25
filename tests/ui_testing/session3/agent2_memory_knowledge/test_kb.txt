@@ -1,0 +1,3 @@
+Test document content for PeanutChat knowledge base testing.
+This file contains sample text that should be searchable.
+Key facts: The sky is blue. Water is wet. PeanutChat is awesome.

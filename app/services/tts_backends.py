@@ -463,18 +463,35 @@ class EdgeTTSBackend(TTSBackend):
 
 class Qwen3TTSBackend(TTSBackend):
     """
-    Qwen3-TTS backend - high quality neural TTS.
+    Qwen3-TTS backend - high quality multilingual neural TTS.
 
-    Model: Qwen/Qwen3-TTS-12Hz-0.6B
-    VRAM: ~2GB
+    Models:
+    - Qwen/Qwen3-TTS-12Hz-0.6B-Base (voice cloning)
+    - Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice (preset voices)
+    - Qwen/Qwen3-TTS-12Hz-1.7B-* (larger, higher quality)
 
-    Install: pip install transformers torch
+    VRAM: ~2GB (0.6B) or ~4GB (1.7B)
+
+    Install: pip install qwen-tts
     """
 
     name = "qwen3"
-    supports_streaming = False
-    supports_voices = False
+    supports_streaming = True  # Qwen3-TTS supports streaming
+    supports_voices = True
     supported_formats = ["wav"]
+
+    # Default voices for CustomVoice models (0.6B has different voices than 1.7B)
+    VOICES = [
+        TTSVoice("vivian", "Vivian (English Female)", "en", "female"),
+        TTSVoice("ryan", "Ryan (English Male)", "en", "male"),
+        TTSVoice("serena", "Serena (Chinese Female)", "zh", "female"),
+        TTSVoice("aiden", "Aiden (Chinese Male)", "zh", "male"),
+        TTSVoice("dylan", "Dylan", "en", "male"),
+        TTSVoice("eric", "Eric", "en", "male"),
+        TTSVoice("ono_anna", "Ono Anna (Japanese)", "ja", "female"),
+        TTSVoice("sohee", "Sohee (Korean)", "ko", "female"),
+        TTSVoice("uncle_fu", "Uncle Fu (Chinese)", "zh", "male"),
+    ]
 
     async def initialize(self) -> None:
         """Load Qwen3-TTS model."""
@@ -482,22 +499,25 @@ class Qwen3TTSBackend(TTSBackend):
 
         try:
             import torch
-            from transformers import AutoModelForCausalLM, AutoProcessor
+            from qwen_tts import Qwen3TTSModel
 
-            self.processor = AutoProcessor.from_pretrained(
+            # Parse device
+            device = self.device if self.device != "cpu" else None
+
+            self.model = Qwen3TTSModel.from_pretrained(
                 self.model_name,
-                trust_remote_code=True
+                device_map=device,
+                dtype=torch.bfloat16,
             )
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                torch_dtype=torch.bfloat16,
-                device_map=self.device
-            )
-            logger.info("Qwen3-TTS model loaded successfully")
+
+            # Check if this is a CustomVoice model
+            self._is_custom_voice = "CustomVoice" in self.model_name
+            self._is_voice_design = "VoiceDesign" in self.model_name
+
+            logger.info(f"Qwen3-TTS model loaded successfully (custom_voice={self._is_custom_voice})")
 
         except ImportError:
-            logger.error("transformers/torch not installed. Install with: pip install transformers torch")
+            logger.error("qwen-tts not installed. Install with: pip install qwen-tts")
             raise
         except Exception as e:
             logger.error(f"Failed to load Qwen3-TTS model: {e}")
@@ -507,55 +527,108 @@ class Qwen3TTSBackend(TTSBackend):
         """Generate audio using Qwen3-TTS."""
         await self.ensure_initialized()
 
-        import torch
+        import soundfile as sf
+
+        try:
+            # Determine language from config or auto-detect
+            language = config.language if config.language != "en" else "auto"
+
+            if self._is_custom_voice:
+                # Use custom voice generation
+                speaker = config.voice if config.voice != "default" else "vivian"
+                audios = self.model.generate_custom_voice(
+                    text,
+                    speaker=speaker,
+                    language=language,
+                )
+            elif self._is_voice_design:
+                # Use voice design (instruction-based)
+                audios = self.model.generate_voice_design(
+                    text,
+                    voice_description="A clear, natural speaking voice",
+                    language=language,
+                )
+            else:
+                # Base model - use voice clone with default reference
+                # For now, fall back to simple generation
+                audios = self.model.generate_custom_voice(
+                    text,
+                    speaker="Chelsie",
+                    language=language,
+                )
+
+            # Get first audio result (audios is a list of numpy arrays)
+            if isinstance(audios, (list, tuple)):
+                audio_array = audios[0]
+            else:
+                audio_array = audios
+            
+            # Ensure it's a numpy array
+            import numpy as np
+            audio_array = np.array(audio_array, dtype=np.float32)
+            
+            # Flatten if needed
+            if audio_array.ndim > 1:
+                audio_array = audio_array.flatten()
+
+            # Convert to WAV bytes
+            buffer = io.BytesIO()
+            sf.write(buffer, audio_array, 24000, format='WAV')
+            buffer.seek(0)
+
+            return buffer.read()
+
+        except Exception as e:
+            logger.error(f"Qwen3-TTS generation failed: {e}")
+            raise
+
+    async def generate_stream(
+        self,
+        text: str,
+        config: TTSConfig
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream audio using Qwen3-TTS streaming mode."""
+        await self.ensure_initialized()
+
+        import soundfile as sf
         import numpy as np
-        import wave
 
-        # Prepare input
-        inputs = self.processor(
-            text=text,
-            return_tensors="pt"
-        ).to(self.model.device)
+        try:
+            language = config.language if config.language != "en" else "auto"
+            speaker = config.voice if config.voice != "default" else "Chelsie"
 
-        # Generate audio tokens
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=4096,
-                do_sample=True,
-                temperature=0.7
-            )
+            # Use streaming generation
+            for audio_chunk in self.model.generate_custom_voice(
+                text,
+                speaker=speaker,
+                language=language,
+                stream=True,
+            ):
+                # Convert chunk to WAV bytes
+                buffer = io.BytesIO()
+                sf.write(buffer, audio_chunk, 24000, format='WAV')
+                buffer.seek(0)
+                yield buffer.read()
 
-        # Decode audio
-        audio = self.processor.decode(
-            outputs[0],
-            skip_special_tokens=True
-        )
-
-        # Default sample rate for Qwen3-TTS
-        sample_rate = 24000
-
-        # Apply speed adjustment via resampling
-        if config.speed != 1.0 and 0.5 <= config.speed <= 2.0:
-            from scipy import signal
-            new_length = int(len(audio) / config.speed)
-            audio = signal.resample(audio, new_length)
-
-        # Convert to int16 WAV
-        audio_int16 = (np.array(audio) * 32767).astype(np.int16)
-
-        buffer = io.BytesIO()
-        with wave.open(buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(int(sample_rate * config.speed))
-            wav_file.writeframes(audio_int16.tobytes())
-
-        buffer.seek(0)
-        return buffer.read()
+        except Exception as e:
+            logger.error(f"Qwen3-TTS streaming failed: {e}")
+            # Fall back to non-streaming
+            audio = await self.generate(text, config)
+            yield audio
 
     async def get_voices(self) -> List[TTSVoice]:
-        return [TTSVoice("default", "Qwen3 Default", "multi")]
+        """Get available voices."""
+        if hasattr(self, 'model') and self._is_custom_voice:
+            try:
+                speakers = self.model.get_supported_speakers()
+                languages = self.model.get_supported_languages()
+                return [
+                    TTSVoice(s, s, ",".join(languages))
+                    for s in speakers
+                ]
+            except Exception:
+                pass
+        return self.VOICES.copy()
 
     async def cleanup(self) -> None:
         if hasattr(self, 'model') and self.model is not None:

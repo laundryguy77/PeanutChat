@@ -1,0 +1,15 @@
+{
+  "name": "agent1_mcp_models",
+  "version": "1.0.0",
+  "description": "",
+  "main": "test_mcp_models.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.58.0"
+  }
+}

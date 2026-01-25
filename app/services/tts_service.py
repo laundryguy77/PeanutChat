@@ -77,7 +77,7 @@ def _get_default_model(backend_name: str) -> str:
         "piper": "en_US-lessac-medium",
         "coqui": "tts_models/en/ljspeech/tacotron2-DDC",
         "kokoro": "kokoro-v0_19.onnx",
-        "qwen3": "Qwen/Qwen3-TTS-12Hz-0.6B",
+        "qwen3": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",  # CustomVoice has preset voices
     }
     return defaults.get(backend_name, "default")
 

@@ -1,0 +1,87 @@
+[2026-01-25T20:46:33.423Z] ============================================================
+[2026-01-25T20:46:33.424Z] PEANUTCHAT INTEGRATION TEST - FINAL - AGENT 3
+[2026-01-25T20:46:33.424Z] Test User: testuser_int3_1769373993423
+[2026-01-25T20:46:33.424Z] ============================================================
+[2026-01-25T20:46:33.565Z] 
+============================================================
+[2026-01-25T20:46:33.565Z] SECTION A: COMPLETE USER JOURNEY
+[2026-01-25T20:46:33.565Z] ============================================================
+[2026-01-25T20:46:33.565Z] 
+--- A1: REGISTER NEW USER ---
+[2026-01-25T20:46:36.065Z] 📸 Screenshot: 01_A1a_initial_page.png
+[2026-01-25T20:46:36.854Z] 📸 Screenshot: 02_A1b_register_tab.png
+[2026-01-25T20:46:36.891Z] Filled registration form for: testuser_int3_1769373993423
+[2026-01-25T20:46:37.042Z] 📸 Screenshot: 03_A1c_register_filled.png
+[2026-01-25T20:46:40.276Z] 📸 Screenshot: 04_A1d_after_register.png
+[2026-01-25T20:46:40.276Z] ✅ Registration complete
+[2026-01-25T20:46:40.277Z] 
+--- A2: VERIFY LOGIN STATUS ---
+[2026-01-25T20:46:40.282Z] User info visible: true
+[2026-01-25T20:46:40.287Z] User display name: testuser_int3_1769373993423
+[2026-01-25T20:46:40.369Z] 📸 Screenshot: 05_A2_logged_in.png
+[2026-01-25T20:46:40.369Z] 
+--- A3: CREATE NEW CONVERSATION ---
+[2026-01-25T20:46:40.922Z] ✅ New chat started
+[2026-01-25T20:46:41.012Z] 📸 Screenshot: 06_A3_new_conversation.png
+[2026-01-25T20:46:41.012Z] 
+--- A4: SEND FIRST MESSAGE ---
+[2026-01-25T20:46:41.132Z] 📸 Screenshot: 07_A4a_message_typed.png
+[2026-01-25T20:46:41.246Z] Message sent, waiting for AI response...
+[2026-01-25T20:47:01.343Z] 📸 Screenshot: 08_A4b_after_response.png
+[2026-01-25T20:47:01.385Z] Messages after first exchange: 0
+[2026-01-25T20:47:01.385Z] 
+--- A5: OPEN SETTINGS ---
+[2026-01-25T20:47:02.730Z] 📸 Screenshot: 09_A5_settings_opened.png
+[2026-01-25T20:47:02.730Z] 
+--- A6: CHANGE THEME ---
+[2026-01-25T20:47:02.742Z] Found 4 theme buttons
+[2026-01-25T20:47:03.353Z] ✅ Selected Midnight theme
+[2026-01-25T20:47:03.544Z] 📸 Screenshot: 10_A6_theme_changed.png
+[2026-01-25T20:47:03.544Z] 
+--- A7: PROFILE & MODEL SETTINGS ---
+[2026-01-25T20:47:03.561Z] Available models: [{"value":"qwen2.5-coder:3b","text":"qwen2.5-coder:3b (tools)"},{"value":"gurubot/self-after-dark:latest","text":"gurubot/self-after-dark:latest (tools)"},{"value":"ministral-3:latest","text":"ministral-3:latest (tools, vision)"},{"value":"qwen3-vl:8b","text":"qwen3-vl:8b (tools, vision, think)"},{"value":"deepseek-coder-v2:latest","text":"deepseek-coder-v2:latest"}]
+[2026-01-25T20:47:03.714Z] 📸 Screenshot: 11_A7_profile_settings.png
+[2026-01-25T20:47:03.714Z] 
+--- A8: SAVE AND CLOSE SETTINGS ---
+[2026-01-25T20:47:04.828Z] Settings saved
+[2026-01-25T20:47:05.432Z] 📸 Screenshot: 12_A8_settings_closed.png
+[2026-01-25T20:47:05.432Z] 
+--- A9: CONTINUE CHATTING ---
+[2026-01-25T20:48:05.463Z] ❌ ERROR: page.click: Timeout 60000ms exceeded.
+Call log:
+  - waiting for locator('#send-btn')
+    - locator resolved to <button disabled title="Send" id="send-btn" class="flex items-center justify-center size-10 bg-primary hover:bg-primary-hover text-white rounded-xl transition-all shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100">…</button>
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    112 × waiting for element to be visible, enabled and stable
+        - element is not enabled
+      - retrying click action
+        - waiting 500ms
+
+[2026-01-25T20:48:05.463Z] Stack: page.click: Timeout 60000ms exceeded.
+Call log:
+  - waiting for locator('#send-btn')
+    - locator resolved to <button disabled title="Send" id="send-btn" class="flex items-center justify-center size-10 bg-primary hover:bg-primary-hover text-white rounded-xl transition-all shadow-lg shadow-primary/20 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100">…</button>
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    112 × waiting for element to be visible, enabled and stable
+        - element is not enabled
+      - retrying click action
+        - waiting 500ms
+
+    at runTests (/home/tech/projects/PeanutChat/tests/ui_testing/session5/agent3_integration/final_integration_test.js:149:20)
+[2026-01-25T20:48:05.560Z] 📸 Screenshot: 13_ERROR_state.png

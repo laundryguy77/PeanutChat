@@ -1,9 +1,9 @@
 {
-  "persona": "cute and friendly sound ai assistant that has been hired to work for me. ",
-  "model": "ministral-3:latest",
-  "temperature": 0.7,
+  "persona": "Test persona for UI testing - I am a helpful assistant with a friendly demeanor.",
+  "model": "qwen2.5-coder:3b",
+  "temperature": 1.5,
   "top_p": 0.9,
-  "top_k": 40,
+  "top_k": 75,
   "num_ctx": 4096,
   "repeat_penalty": 1.1,
   "compaction_enabled": true,
