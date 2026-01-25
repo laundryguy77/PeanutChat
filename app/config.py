@@ -111,6 +111,28 @@ WEB_SEARCH_AVAILABLE = bool(BRAVE_SEARCH_API_KEY)
 VIDEO_GENERATION_AVAILABLE = bool(HF_TOKEN)
 VOICE_AVAILABLE = VOICE_ENABLED  # Voice requires explicit enablement
 
+# =============================================================================
+# Voice Features (TTS/STT)
+# =============================================================================
+
+# Global enable/disable for voice features
+VOICE_ENABLED = os.getenv("VOICE_ENABLED", "false").lower() == "true"
+
+# TTS Configuration
+# Available backends: edge (online, free), piper (offline, fast), coqui (high quality), kokoro
+TTS_BACKEND = os.getenv("TTS_BACKEND", "edge")
+TTS_MODEL = os.getenv("TTS_MODEL", "default")
+TTS_DEVICE = os.getenv("TTS_DEVICE", "cpu")
+
+# STT Configuration
+# Available backends: faster_whisper (recommended), whisper, vosk (offline)
+STT_BACKEND = os.getenv("STT_BACKEND", "faster_whisper")
+STT_MODEL = os.getenv("STT_MODEL", "small")
+STT_DEVICE = os.getenv("STT_DEVICE", "cpu")
+
+# Conversations directory (for JSON file storage)
+CONVERSATIONS_DIR = os.getenv("CONVERSATIONS_DIR", "conversations")
+
 class AppSettings(BaseModel):
     persona: Optional[str] = None
     model: str = "huihui_ai/qwen3-vl-abliterated:8b"
