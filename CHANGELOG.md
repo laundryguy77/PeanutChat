@@ -4,6 +4,100 @@ All notable changes to PeanutChat are documented in this file.
 
 ---
 
+## [2026-01-25] - Voice Integration & Admin Portal
+
+### Voice System (TTS/STT)
+
+**Model-Swappable Architecture**
+- Added abstract `TTSBackend` and `STTBackend` base classes
+- TTS backends: Edge-TTS, Piper, Coqui, Kokoro
+- STT backends: Whisper, Faster-Whisper, Vosk
+- Backend selection via environment variables (`TTS_BACKEND`, `STT_BACKEND`)
+- Lazy model loading to conserve GPU memory
+
+**Voice Services**
+- `tts_service.py` - TTS orchestration with streaming support
+- `stt_service.py` - STT orchestration with language detection
+- `voice_settings_service.py` - Per-user voice preferences
+- Voice modes: disabled, transcribe_only, tts_only, conversation
+
+**Voice API Endpoints**
+- `POST /api/voice/tts/stream` - Stream TTS audio (SSE)
+- `POST /api/voice/transcribe` - Transcribe audio to text
+- `GET /api/voice/tts/voices` - List available voices
+- `GET/PUT /api/voice/settings` - User voice settings
+- `GET /api/voice/capabilities` - Backend capabilities
+
+### Admin Portal
+
+**User Management**
+- Create, edit, delete users via web UI
+- Password reset functionality
+- Activate/deactivate user accounts
+- Mode restrictions (normal_only, no_full_unlock)
+- Per-user voice enable/disable
+
+**Feature Flag System**
+- Global feature defaults in `feature_flags` table
+- Per-user overrides in `user_feature_overrides` table
+- Features: web_search, memory, tts, stt, image_gen, video_gen, knowledge_base
+
+**Dashboard & Audit**
+- System statistics (users, conversations, messages)
+- Admin audit log for all administrative actions
+- Filterable by admin, action type, date range
+
+**Admin API Endpoints**
+- `GET/POST /api/admin/users` - List/create users
+- `PATCH/DELETE /api/admin/users/{id}` - Update/delete user
+- `POST /api/admin/users/{id}/reset-password` - Reset password
+- `GET/PATCH /api/admin/features` - Feature flag management
+- `PUT /api/admin/users/{id}/features/{key}` - User feature override
+- `GET /api/admin/audit-log` - View audit log
+- `GET /api/admin/dashboard` - System statistics
+
+**Admin Setup**
+- `scripts/create_admin.py` - CLI script to create admin users
+- Interactive and command-line modes
+- Promote existing users to admin
+
+### Database Migrations
+
+- Migration 011: Voice settings (`voice_enabled` column on users)
+- Migration 012: Admin features (`is_admin`, `is_active`, `mode_restriction` columns; feature tables)
+
+### New Files
+
+**Voice System**
+- `app/services/tts_backends.py` - TTS backend implementations
+- `app/services/stt_backends.py` - STT backend implementations
+- `app/services/tts_service.py` - TTS orchestration
+- `app/services/stt_service.py` - STT orchestration
+- `app/services/voice_settings_service.py` - Voice settings
+- `app/routers/voice.py` - Voice API router
+
+**Admin System**
+- `app/services/admin_service.py` - Admin business logic
+- `app/services/feature_service.py` - Feature flag management
+- `app/routers/admin.py` - Admin API router
+- `static/admin.html` - Admin portal UI
+- `static/js/admin.js` - Admin panel JavaScript
+- `scripts/create_admin.py` - Admin user creation script
+
+### Configuration Changes
+
+New environment variables:
+```bash
+# Voice Features
+VOICE_ENABLED=false
+TTS_BACKEND=edge
+TTS_MODEL=default
+STT_BACKEND=faster_whisper
+STT_MODEL=small
+```
+
+---
+
 ## [2026-01-24] - UI/Backend Sync & System Improvements
 
 ### UI-Backend Sync Fixes
