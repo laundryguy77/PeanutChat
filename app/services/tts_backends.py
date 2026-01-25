@@ -480,17 +480,17 @@ class Qwen3TTSBackend(TTSBackend):
     supports_voices = True
     supported_formats = ["wav"]
 
-    # Default voices for CustomVoice models (0.6B has different voices than 1.7B)
+    # Voices for CustomVoice models (case-sensitive, must match exactly)
     VOICES = [
-        TTSVoice("vivian", "Vivian (English Female)", "en", "female"),
-        TTSVoice("ryan", "Ryan (English Male)", "en", "male"),
-        TTSVoice("serena", "Serena (Chinese Female)", "zh", "female"),
-        TTSVoice("aiden", "Aiden (Chinese Male)", "zh", "male"),
-        TTSVoice("dylan", "Dylan", "en", "male"),
-        TTSVoice("eric", "Eric", "en", "male"),
-        TTSVoice("ono_anna", "Ono Anna (Japanese)", "ja", "female"),
-        TTSVoice("sohee", "Sohee (Korean)", "ko", "female"),
-        TTSVoice("uncle_fu", "Uncle Fu (Chinese)", "zh", "male"),
+        TTSVoice("Vivian", "Vivian - Bright young female (Chinese)", "Chinese", "female"),
+        TTSVoice("Serena", "Serena - Warm gentle female (Chinese)", "Chinese", "female"),
+        TTSVoice("Ryan", "Ryan - Dynamic male (English)", "English", "male"),
+        TTSVoice("Aiden", "Aiden - Sunny American male (English)", "English", "male"),
+        TTSVoice("Dylan", "Dylan - Beijing male (Chinese)", "Chinese", "male"),
+        TTSVoice("Eric", "Eric - Chengdu male (Chinese/Sichuan)", "Chinese", "male"),
+        TTSVoice("Ono_Anna", "Ono Anna - Playful female (Japanese)", "Japanese", "female"),
+        TTSVoice("Sohee", "Sohee - Warm female (Korean)", "Korean", "female"),
+        TTSVoice("Uncle_Fu", "Uncle Fu - Seasoned male (Chinese)", "Chinese", "male"),
     ]
 
     async def initialize(self) -> None:
@@ -530,12 +530,17 @@ class Qwen3TTSBackend(TTSBackend):
         import soundfile as sf
 
         try:
-            # Determine language from config or auto-detect
-            language = config.language if config.language != "en" else "auto"
+            # Map short codes to full language names (Qwen3-TTS uses full names)
+            lang_map = {
+                "en": "English", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
+                "de": "German", "fr": "French", "ru": "Russian", "pt": "Portuguese",
+                "es": "Spanish", "it": "Italian", "auto": "Auto"
+            }
+            language = lang_map.get(config.language, config.language) if config.language else "Auto"
 
             if self._is_custom_voice:
-                # Use custom voice generation
-                speaker = config.voice if config.voice != "default" else "vivian"
+                # Use custom voice generation (speaker names are case-sensitive)
+                speaker = config.voice if config.voice != "default" else "Vivian"
                 audios = self.model.generate_custom_voice(
                     text,
                     speaker=speaker,
