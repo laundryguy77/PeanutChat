@@ -253,9 +253,17 @@ export class VoiceManager {
                 this.settings.voice_mode === 'conversation');
     }
 
-    async speakText(text) {
-        if (!this.canPlayTTS) {
+    async speakText(text, force = false) {
+        // Check if TTS is enabled (unless forced via speaker button)
+        if (!force && !this.canPlayTTS) {
             console.log('[Voice] TTS not enabled');
+            return;
+        }
+
+        // Check if voice features are enabled on server (always required)
+        if (!this.settings.voice_enabled) {
+            console.log('[Voice] Voice features disabled on server');
+            this.showToast('Voice features are not enabled on the server', 'warning');
             return;
         }
 
@@ -273,6 +281,7 @@ export class VoiceManager {
             await this.playTTSStream(cleanText);
         } catch (error) {
             console.error('[Voice] TTS playback error:', error);
+            this.showToast('Failed to play audio', 'error');
         }
     }
 

@@ -522,6 +522,32 @@ export class ChatManager {
             };
             actions.appendChild(copyBtn);
 
+            // Speaker button for TTS
+            const speakBtn = document.createElement('button');
+            speakBtn.className = 'p-1.5 text-gray-500 hover:text-white hover:bg-white/10 rounded-lg transition-all speak-btn';
+            speakBtn.title = 'Read aloud';
+            speakBtn.innerHTML = '<span class="material-symbols-outlined text-sm">volume_up</span>';
+            speakBtn.onclick = async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const textToSpeak = contentEl.textContent || messageContent;
+                if (chatManager.app.voiceManager) {
+                    // Update button to show playing state
+                    speakBtn.innerHTML = '<span class="material-symbols-outlined text-sm animate-pulse">volume_up</span>';
+                    speakBtn.classList.add('text-primary');
+                    try {
+                        // Force=true bypasses voice_mode check for manual speak requests
+                        await chatManager.app.voiceManager.speakText(textToSpeak, true);
+                    } finally {
+                        speakBtn.innerHTML = '<span class="material-symbols-outlined text-sm">volume_up</span>';
+                        speakBtn.classList.remove('text-primary');
+                    }
+                } else {
+                    console.log('[TTS] Voice manager not available');
+                }
+            };
+            actions.appendChild(speakBtn);
+
             if (msgId) {
                 const regenBtn = document.createElement('button');
                 regenBtn.className = 'p-1.5 text-gray-500 hover:text-white hover:bg-white/10 rounded-lg transition-all';
