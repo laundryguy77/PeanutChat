@@ -268,6 +268,39 @@ async def update_voice_settings(
     }
 
 
+@router.get("/voices")
+async def list_voices(
+    user: UserResponse = Depends(require_auth),
+    _: None = Depends(require_voice_enabled)
+):
+    """Get available TTS voices for the current backend."""
+    tts_service = get_tts_service()
+    
+    try:
+        voices = await tts_service.get_voices()
+        return {
+            "success": True,
+            "backend": config.TTS_BACKEND,
+            "voices": [
+                {
+                    "id": v.id,
+                    "name": v.name,
+                    "language": v.language,
+                    "gender": v.gender
+                }
+                for v in voices
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Failed to get voices: {e}")
+        return {
+            "success": False,
+            "backend": config.TTS_BACKEND,
+            "voices": [],
+            "error": str(e)
+        }
+
+
 @router.get("/status")
 async def voice_status(
     user: UserResponse = Depends(require_auth)

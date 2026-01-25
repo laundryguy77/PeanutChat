@@ -71,6 +71,7 @@ export class SettingsManager {
 
     setupVoiceSettingsListeners() {
         const voiceMode = document.getElementById('voice-mode');
+        const ttsVoice = document.getElementById('tts-voice');
         const ttsSpeedContainer = document.getElementById('tts-speed-container');
         const sttLanguageContainer = document.getElementById('stt-language-container');
 
@@ -79,10 +80,18 @@ export class SettingsManager {
                 this.updateVoiceUIState();
             });
         }
+        
+        // Save voice settings when voice selection changes
+        if (ttsVoice) {
+            ttsVoice.addEventListener('change', () => {
+                this.saveVoiceSettings();
+            });
+        }
     }
 
     updateVoiceUIState() {
         const voiceMode = document.getElementById('voice-mode');
+        const ttsVoiceContainer = document.getElementById('tts-voice-container');
         const ttsSpeedContainer = document.getElementById('tts-speed-container');
         const sttLanguageContainer = document.getElementById('stt-language-container');
         const autoPlayContainer = document.getElementById('voice-auto-play')?.closest('.flex');
@@ -93,6 +102,10 @@ export class SettingsManager {
         const showTTS = mode === 'tts_only' || mode === 'conversation';
         const showSTT = mode === 'transcribe_only' || mode === 'conversation';
 
+        if (ttsVoiceContainer) {
+            ttsVoiceContainer.style.opacity = showTTS ? '1' : '0.5';
+            ttsVoiceContainer.style.pointerEvents = showTTS ? 'auto' : 'none';
+        }
         if (ttsSpeedContainer) {
             ttsSpeedContainer.style.opacity = showTTS ? '1' : '0.5';
             ttsSpeedContainer.style.pointerEvents = showTTS ? 'auto' : 'none';
@@ -192,6 +205,8 @@ export class SettingsManager {
             const response = await fetch('/api/voice/settings', { credentials: 'include' });
             if (response.ok) {
                 const voiceSettings = await response.json();
+                // Load available voices first, then update UI with current selection
+                await this.loadAvailableVoices();
                 this.updateVoiceUI(voiceSettings);
             }
         } catch (error) {
@@ -199,8 +214,53 @@ export class SettingsManager {
         }
     }
 
+    async loadAvailableVoices() {
+        const voiceSelect = document.getElementById('tts-voice');
+        const voiceHint = document.getElementById('tts-voice-hint');
+        
+        if (!voiceSelect) return;
+        
+        try {
+            const response = await fetch('/api/voice/voices', { credentials: 'include' });
+            if (response.ok) {
+                const data = await response.json();
+                
+                // Clear existing options except default
+                voiceSelect.innerHTML = '<option value="default">Default</option>';
+                
+                if (data.success && data.voices && data.voices.length > 0) {
+                    data.voices.forEach(voice => {
+                        const option = document.createElement('option');
+                        option.value = voice.id;
+                        option.textContent = `${voice.id} - ${voice.language}${voice.gender ? ` (${voice.gender})` : ''}`;
+                        option.title = voice.name;
+                        voiceSelect.appendChild(option);
+                    });
+                    
+                    if (voiceHint) {
+                        voiceHint.textContent = `${data.voices.length} voices available (${data.backend})`;
+                    }
+                } else {
+                    if (voiceHint) {
+                        voiceHint.textContent = 'Using default voice';
+                    }
+                }
+            } else {
+                if (voiceHint) {
+                    voiceHint.textContent = 'Voice selection unavailable';
+                }
+            }
+        } catch (error) {
+            console.warn('Failed to load available voices:', error);
+            if (voiceHint) {
+                voiceHint.textContent = 'Failed to load voices';
+            }
+        }
+    }
+
     updateVoiceUI(settings) {
         const voiceMode = document.getElementById('voice-mode');
+        const ttsVoice = document.getElementById('tts-voice');
         const ttsSpeed = document.getElementById('tts-speed');
         const ttsSpeedValue = document.getElementById('tts-speed-value');
         const autoPlay = document.getElementById('voice-auto-play');
@@ -209,6 +269,7 @@ export class SettingsManager {
         const voiceSection = document.getElementById('voice-settings-section');
 
         if (voiceMode) voiceMode.value = settings.voice_mode || 'disabled';
+        if (ttsVoice) ttsVoice.value = settings.tts_voice || 'default';
         if (ttsSpeed) {
             ttsSpeed.value = settings.tts_speed || 1.0;
             if (ttsSpeedValue) ttsSpeedValue.textContent = `${settings.tts_speed || 1.0}x`;
@@ -321,6 +382,7 @@ export class SettingsManager {
 
     async saveVoiceSettings() {
         const voiceMode = document.getElementById('voice-mode');
+        const ttsVoice = document.getElementById('tts-voice');
         const ttsSpeed = document.getElementById('tts-speed');
         const autoPlay = document.getElementById('voice-auto-play');
         const sttLanguage = document.getElementById('stt-language');
@@ -330,7 +392,7 @@ export class SettingsManager {
             tts_speed: parseFloat(ttsSpeed?.value || 1.0),
             auto_play: autoPlay?.checked || false,
             stt_language: sttLanguage?.value || 'en',
-            tts_voice: 'default'
+            tts_voice: ttsVoice?.value || 'default'
         };
 
         try {
