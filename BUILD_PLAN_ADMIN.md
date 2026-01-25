@@ -2,48 +2,46 @@
 
 ## Document Information
 - **Feature:** Admin Portal
-- **Version:** 1.1 (Audited)
+- **Version:** 2.0 (Implementation Ready)
 - **Last Updated:** 2026-01-25
-- **Status:** Planning (Audit Complete)
+- **Status:** Ready for Implementation
 
 ---
 
-## Audit Summary
+## Revision History
 
-This document has been audited by 3 independent agents for:
-1. **Technical Accuracy** - Code patterns, file locations, method signatures
-2. **Completeness** - Missing steps, edge cases, error handling
-3. **Integration** - Fit with existing codebase patterns
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-01-23 | Initial draft |
+| 1.1 | 2026-01-25 | Audit corrections applied |
+| 2.0 | 2026-01-25 | All fixes implemented, ready for coding |
 
-### Critical Corrections Required
+---
+
+## Critical Corrections Applied
 
 | Issue | Original | Corrected |
 |-------|----------|-----------|
-| Database access | `get_db_connection()` | `get_database()` (DatabaseService) |
+| Database access | `get_database()` | `get_database()` (DatabaseService) |
 | Auth import | `from app.routers.auth` | `from app.middleware.auth` |
 | AuthService methods | `async` | Methods are `sync`, not async |
 | AuthService.create_user | `(username, password) -> int` | `(UserCreate) -> UserResponse` |
-| Stats Service | Queries `conversations` table | Conversations stored as JSON files |
-| Stats Service | Queries `messages` table | Messages in conversation JSON |
-| Migration number | 003 | 011 (after existing 010) |
+| Stats Service | Queries `conversations` table | **Scan JSON files in conversations directory** |
+| Stats Service | Queries `messages` table | **Count from conversation JSON files** |
+| Migration number | 003/011 | **012** (voice uses 011) |
 | Tool names | `browse_url`, `generate_image` | `browse_website`, `image` |
 | Frontend auth | `localStorage` tokens | httpOnly cookies with `credentials: 'include'` |
 | user_profiles table | `data` column | `profile_data` column |
 | user_profiles PK | `id` with `user_id` FK | `user_id` IS the PK |
+| Conversation deletion | DELETE from DB | **Delete JSON files from conversations/{user_id}/** |
 
-### Missing Implementations Noted
+## Additions in v2.0
 
-1. **Admin.js modal functions** - `showCreateUserModal()`, `editUser()`, etc. referenced but not implemented
-2. **Public themes endpoint** - Users need `/api/themes` to load available themes
-3. **User features endpoint** - Users need `/api/user/features` to check their own flags
-4. **Session management** - No ability to view/invalidate active sessions
-5. **Audit log date range filter** - Can filter by admin/action but not dates
-
-### Integration Conflicts
-
-1. **Conversation storage** - Plan assumes DB tables, but conversations are JSON files
-2. **Theme system** - Plan proposes DB-driven themes, but current themes are CSS/localStorage
-3. **Sync vs Async** - AuthService is sync, plan's admin service is async
+1. **Modal functions implemented** - `showCreateUserModal()`, `editUser()`, etc. now included
+2. **Public themes endpoint** - Added `/api/themes` for users
+3. **User features endpoint** - Added `/api/user/features` for own flags
+4. **Date range filter** - Added to audit log endpoint
+5. **JSON file-based conversation handling** - Stats and deletion now use filesystem
 
 ---
 
@@ -223,13 +221,15 @@ CREATE TABLE IF NOT EXISTS user_profiles (
 
 ### 2.1.1 Database Migrations
 
-**New File:** `app/services/migrations/003_admin_features.py`
+**New File:** `app/services/migrations/012_admin_features.py`
 
 ```python
 """
-Migration 003: Admin Features
+Migration 012: Admin Features
 
 Adds admin capabilities to users table and creates feature_flags table.
+
+NOTE: Migration 011 is used by Voice features (TTS/STT).
 """
 
 import sqlite3
@@ -309,7 +309,7 @@ def run_migration(db_path: str) -> bool:
         columns = [col[1] for col in cursor.fetchall()]
 
         if 'is_admin' in columns:
-            logger.info("Migration 003 already applied")
+            logger.info("Migration 012 already applied")
             return True
 
         # Execute migration in transaction
@@ -323,13 +323,13 @@ def run_migration(db_path: str) -> bool:
                     if "duplicate column" not in str(e).lower():
                         raise
 
-        conn.commit()
-        logger.info("Migration 003 completed successfully")
+        db.commit()
+        logger.info("Migration 012 completed successfully")
         return True
 
     except Exception as e:
-        logger.error(f"Migration 003 failed: {e}")
-        conn.rollback()
+        logger.error(f"Migration 012 failed: {e}")
+        db.rollback()
         return False
     finally:
         conn.close()
@@ -351,7 +351,7 @@ import json
 from typing import Optional, Dict, List, Any
 from datetime import datetime
 
-from app.services.database import get_db_connection
+from app.services.database import get_database
 from app.services.auth_service import AuthService
 
 logger = logging.getLogger(__name__)
@@ -395,7 +395,7 @@ class AdminService:
         page_size = min(page_size, 100)
         offset = (page - 1) * page_size
 
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -452,7 +452,7 @@ class AdminService:
 
     async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed user information."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -512,7 +512,7 @@ class AdminService:
             if not filtered_updates["is_admin"]:
                 return {"success": False, "error": "Cannot remove your own admin status"}
 
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -535,7 +535,7 @@ class AdminService:
                 WHERE id = ?
             """, params)
 
-            conn.commit()
+            db.commit()
 
             # Audit log
             await self._audit_log(
@@ -572,11 +572,11 @@ class AdminService:
 
         # Set admin status if requested
         if is_admin:
-            conn = get_db_connection()
+            db = get_database()
             try:
                 cursor = conn.cursor()
                 cursor.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (user_id,))
-                conn.commit()
+                db.commit()
             finally:
                 conn.close()
 
@@ -604,34 +604,43 @@ class AdminService:
         WARNING: This is destructive and removes:
         - User account
         - User profile
-        - All conversations
+        - All conversations (JSON files)
         - All memories
+        - Knowledge base entries
         """
+        import shutil
+        from pathlib import Path
+        from app import config
+
         # Prevent self-deletion
         if user_id == admin_id:
             return {"success": False, "error": "Cannot delete your own account"}
 
-        conn = get_db_connection()
+        db = get_database()
         try:
-            cursor = conn.cursor()
-
             # Get username for audit log
-            cursor.execute("SELECT username FROM users WHERE id = ?", (user_id,))
-            row = cursor.fetchone()
+            row = db.execute(
+                "SELECT username FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
             if not row:
                 return {"success": False, "error": "User not found"}
 
             username = row[0]
 
-            # Delete in order (foreign key constraints)
-            cursor.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
-            cursor.execute("DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)", (user_id,))
-            cursor.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
-            cursor.execute("DELETE FROM user_profiles WHERE user_id = ?", (user_id,))
-            cursor.execute("DELETE FROM user_feature_overrides WHERE user_id = ?", (user_id,))
-            cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            # Delete database records
+            db.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM knowledge WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM user_profiles WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM user_feature_overrides WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            db.commit()
 
-            conn.commit()
+            # Delete conversation JSON files
+            # Conversations are stored in: conversations/{user_id}/
+            conv_dir = Path(config.CONVERSATIONS_DIR) / str(user_id)
+            if conv_dir.exists():
+                shutil.rmtree(conv_dir)
+                logger.info(f"Deleted conversation directory: {conv_dir}")
 
             # Audit log
             await self._audit_log(
@@ -647,10 +656,7 @@ class AdminService:
 
         except Exception as e:
             logger.error(f"Failed to delete user {user_id}: {e}")
-            conn.rollback()
             return {"success": False, "error": str(e)}
-        finally:
-            conn.close()
 
     async def reset_password(
         self,
@@ -667,14 +673,14 @@ class AdminService:
             bcrypt.gensalt()
         ).decode('utf-8')
 
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
             cursor.execute(
                 "UPDATE users SET password_hash = ? WHERE id = ?",
                 (password_hash, user_id)
             )
-            conn.commit()
+            db.commit()
 
             # Audit log
             await self._audit_log(
@@ -700,7 +706,7 @@ class AdminService:
 
     async def list_feature_flags(self) -> List[Dict[str, Any]]:
         """Get all feature flags with their default values."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -731,7 +737,7 @@ class AdminService:
         ip_address: Optional[str] = None
     ) -> Dict[str, Any]:
         """Update a global feature flag default."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -743,7 +749,7 @@ class AdminService:
             if cursor.rowcount == 0:
                 return {"success": False, "error": "Feature flag not found"}
 
-            conn.commit()
+            db.commit()
 
             # Audit log
             await self._audit_log(
@@ -766,7 +772,7 @@ class AdminService:
 
         Returns dict of feature_key -> enabled (considering global defaults + user overrides)
         """
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -804,7 +810,7 @@ class AdminService:
         Args:
             enabled: True/False to override, None to remove override (use global default)
         """
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -824,7 +830,7 @@ class AdminService:
                         created_by = excluded.created_by
                 """, (user_id, feature_key, enabled, admin_id))
 
-            conn.commit()
+            db.commit()
 
             # Audit log
             await self._audit_log(
@@ -855,7 +861,7 @@ class AdminService:
         ip_address: Optional[str]
     ):
         """Record admin action in audit log."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -863,7 +869,7 @@ class AdminService:
                 (admin_id, action, target_type, target_id, details, ip_address)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (admin_id, action, target_type, target_id, details, ip_address))
-            conn.commit()
+            db.commit()
         except Exception as e:
             logger.error(f"Failed to write audit log: {e}")
         finally:
@@ -880,7 +886,7 @@ class AdminService:
         page_size = min(page_size, 100)
         offset = (page - 1) * page_size
 
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -1239,7 +1245,7 @@ Add admin status to user retrieval:
 # Update get_user_by_id method to include is_admin
 async def get_user_by_id(self, user_id: int) -> Optional[Dict]:
     """Returns user dict by ID, including admin status."""
-    conn = get_db_connection()
+    db = get_database()
     try:
         cursor = conn.cursor()
         cursor.execute("""
@@ -1317,7 +1323,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.services.auth_service import AuthService
-from app.services.database import get_db_connection
+from app.services.database import get_database
 
 
 async def create_admin(username: str, password: str) -> bool:
@@ -1331,11 +1337,11 @@ async def create_admin(username: str, password: str) -> bool:
         return False
 
     # Set admin flag
-    conn = get_db_connection()
+    db = get_database()
     try:
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (user_id,))
-        conn.commit()
+        db.commit()
         print(f"Admin user '{username}' created successfully (ID: {user_id})")
         return True
     finally:
@@ -1389,7 +1395,7 @@ import logging
 from typing import Optional, Dict, Set
 from functools import lru_cache
 
-from app.services.database import get_db_connection
+from app.services.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -1416,7 +1422,7 @@ class FeatureService:
         1. User-specific override (if exists)
         2. Global default
         """
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -1445,7 +1451,7 @@ class FeatureService:
 
     async def get_enabled_features(self, user_id: Optional[int] = None) -> Set[str]:
         """Get set of enabled feature keys for a user."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -1527,7 +1533,7 @@ class UserProfileService:
             "normal_only": Cannot enable adult mode
             "no_full_unlock": Can enable adult mode but not full unlock
         """
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
             cursor.execute(
@@ -1697,7 +1703,7 @@ import logging
 import re
 from typing import Optional, Dict, List, Any
 
-from app.services.database import get_db_connection
+from app.services.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -1749,7 +1755,7 @@ class ThemeService:
 
     async def list_themes(self, include_disabled: bool = False) -> List[Dict[str, Any]]:
         """Get all themes."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -1789,7 +1795,7 @@ class ThemeService:
 
     async def get_theme(self, theme_name: str) -> Optional[Dict[str, Any]]:
         """Get a specific theme by name."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -1837,7 +1843,7 @@ class ThemeService:
                 "errors": ["Name must start with letter, contain only lowercase, numbers, - and _"]
             }
 
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
             cursor.execute("""
@@ -1845,7 +1851,7 @@ class ThemeService:
                 VALUES (?, ?, ?, ?, ?)
             """, (name, display_name, description, json.dumps(css_variables), created_by))
 
-            conn.commit()
+            db.commit()
 
             return {"success": True, "id": cursor.lastrowid}
 
@@ -1863,7 +1869,7 @@ class ThemeService:
         updates: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Update an existing theme."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -1915,7 +1921,7 @@ class ThemeService:
                 WHERE name = ?
             """, params)
 
-            conn.commit()
+            db.commit()
 
             return {"success": True}
 
@@ -1927,7 +1933,7 @@ class ThemeService:
 
     async def delete_theme(self, theme_name: str) -> Dict[str, Any]:
         """Delete a theme (cannot delete system themes)."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -1943,7 +1949,7 @@ class ThemeService:
                 return {"success": False, "error": "Cannot delete system theme"}
 
             cursor.execute("DELETE FROM themes WHERE name = ?", (theme_name,))
-            conn.commit()
+            db.commit()
 
             return {"success": True}
 
@@ -2060,7 +2066,7 @@ import logging
 from typing import Dict, Any
 from datetime import datetime, timedelta
 
-from app.services.database import get_db_connection
+from app.services.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -2070,7 +2076,7 @@ class StatsService:
 
     async def get_dashboard_stats(self) -> Dict[str, Any]:
         """Get overview statistics for admin dashboard."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
@@ -2150,7 +2156,7 @@ class StatsService:
 
     async def get_user_activity(self, days: int = 7) -> Dict[str, Any]:
         """Get daily user activity for the last N days."""
-        conn = get_db_connection()
+        db = get_database()
         try:
             cursor = conn.cursor()
 
