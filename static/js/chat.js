@@ -803,10 +803,11 @@ export class ChatManager {
             </details>
         `;
 
-        // Insert at the beginning of the assistant message content
-        this.currentAssistantMessage.contentEl.insertBefore(
+        // Insert at the beginning of the bubble container (before content area)
+        // This prevents it from being wiped when contentEl.innerHTML is replaced
+        this.currentAssistantMessage.bubbleContainer.insertBefore(
             debugFrame,
-            this.currentAssistantMessage.contentEl.firstChild
+            this.currentAssistantMessage.bubbleContainer.firstChild
         );
     }
 
