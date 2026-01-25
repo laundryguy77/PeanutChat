@@ -17,15 +17,26 @@ app/
 ├── routers/             # API route handlers
 │   ├── auth.py, chat.py, commands.py, knowledge.py
 │   ├── mcp.py, memory.py, models.py, settings.py, user_profile.py
+│   ├── voice.py         # TTS/STT API endpoints
+│   └── admin.py         # Admin panel API endpoints
 ├── services/            # Business logic
 │   ├── ollama.py, auth_service.py, conversation_store.py
 │   ├── knowledge_base.py, memory_service.py, mcp_client.py
 │   ├── memory_extractor.py, profile_extractor.py
-│   └── image_backends.py, video_backends.py, tool_executor.py
+│   ├── image_backends.py, video_backends.py, tool_executor.py
+│   ├── tts_backends.py, stt_backends.py  # Voice model backends
+│   ├── tts_service.py, stt_service.py    # Voice orchestration
+│   ├── voice_settings_service.py         # Per-user voice settings
+│   ├── admin_service.py                  # Admin operations
+│   └── feature_service.py                # Feature flag management
 ├── models/              # Pydantic schemas
 ├── middleware/          # Request middleware
 └── tools/               # Tool definitions for LLM
 static/                  # Frontend HTML/JS/CSS
+├── admin.html           # Admin portal UI
+└── js/admin.js          # Admin panel JavaScript
+scripts/
+└── create_admin.py      # CLI script to create admin users
 ```
 
 ## Service Management (Passwordless Sudo)
@@ -215,7 +226,7 @@ Key environment variables in `.env`:
 ADULT_PASSCODE=         # Passcode for uncensored mode
 JWT_SECRET=             # JWT signing secret
 
-# Optional
+# Optional - General
 OLLAMA_BASE_URL=http://localhost:11434
 KB_EMBEDDING_MODEL=nomic-embed-text
 THINKING_TOKEN_LIMIT_INITIAL=3000
@@ -223,7 +234,119 @@ THINKING_TOKEN_LIMIT_FOLLOWUP=2000
 THINKING_HARD_LIMIT_INITIAL=30000
 THINKING_HARD_LIMIT_FOLLOWUP=20000
 CHAT_REQUEST_TIMEOUT=300
+
+# Optional - Voice (TTS/STT)
+VOICE_ENABLED=false              # Enable voice features
+TTS_BACKEND=edge                 # edge, piper, coqui, kokoro
+TTS_MODEL=default                # Model name/path
+STT_BACKEND=faster_whisper       # whisper, faster_whisper, vosk
+STT_MODEL=small                  # Model size
 ```
+
+---
+
+### Voice System (TTS/STT)
+
+Model-swappable voice integration with text-to-speech and speech-to-text.
+
+**Files:**
+- `app/services/tts_backends.py` - TTS model implementations (Edge, Piper, Coqui, Kokoro)
+- `app/services/stt_backends.py` - STT model implementations (Whisper, Faster-Whisper, Vosk)
+- `app/services/tts_service.py` - TTS orchestration service
+- `app/services/stt_service.py` - STT orchestration service
+- `app/services/voice_settings_service.py` - Per-user voice preferences
+- `app/routers/voice.py` - REST API endpoints
+
+**Architecture:**
+```
+Voice Router (/api/voice/*)
+         │
+    ┌────┴────┐
+    ▼         ▼
+TTS Service  STT Service
+    │         │
+    ▼         ▼
+TTSBackend   STTBackend (abstract)
+    │         │
+┌───┼───┐  ┌──┼──┐
+Edge Piper  Whisper Faster-Whisper
+Coqui Kokoro  Vosk
+```
+
+**Voice Modes:**
+| Mode | STT | TTS | Description |
+|------|-----|-----|-------------|
+| `disabled` | No | No | No voice features (default) |
+| `transcribe_only` | Yes | No | Voice input, text responses |
+| `tts_only` | No | Yes | Text input, voice responses |
+| `conversation` | Yes | Yes | Full voice-to-voice chat |
+
+**Configuration:**
+```bash
+VOICE_ENABLED=false          # Master toggle
+TTS_BACKEND=edge             # edge, piper, coqui, kokoro
+TTS_MODEL=default            # Model-specific
+STT_BACKEND=faster_whisper   # whisper, faster_whisper, vosk
+STT_MODEL=small              # tiny, base, small, medium, large
+```
+
+**Adding New Backends:**
+1. Subclass `TTSBackend` or `STTBackend` in the respective backends file
+2. Implement `initialize()`, `generate()`/`transcribe()`, and `cleanup()`
+3. Register in `TTS_BACKENDS` or `STT_BACKENDS` dict
+4. Use via environment variable: `TTS_BACKEND=my_new_backend`
+
+---
+
+### Admin System
+
+Administrative portal for user and feature management.
+
+**Files:**
+- `app/routers/admin.py` - Admin API endpoints
+- `app/services/admin_service.py` - User CRUD, stats, audit log
+- `app/services/feature_service.py` - Feature flag management
+- `static/admin.html` - Admin portal UI
+- `static/js/admin.js` - Admin panel JavaScript
+- `scripts/create_admin.py` - CLI for creating admin users
+
+**Features:**
+- User management (create, edit, delete, password reset)
+- Mode restrictions (lock users to specific content modes)
+- Feature flags (global defaults + per-user overrides)
+- Audit logging (all admin actions logged)
+- Dashboard statistics
+
+**API Endpoints:**
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/admin/users` | List users (paginated) |
+| POST | `/api/admin/users` | Create user |
+| PATCH | `/api/admin/users/{id}` | Update user |
+| DELETE | `/api/admin/users/{id}` | Delete user |
+| POST | `/api/admin/users/{id}/reset-password` | Reset password |
+| GET | `/api/admin/features` | List feature flags |
+| PATCH | `/api/admin/features/{key}` | Update global default |
+| PUT | `/api/admin/users/{id}/features/{key}` | Set user override |
+| GET | `/api/admin/audit-log` | View audit log |
+| GET | `/api/admin/dashboard` | System statistics |
+
+**Creating Admin Users:**
+```bash
+# Interactive
+python scripts/create_admin.py
+
+# Command line
+python scripts/create_admin.py <username> <password>
+
+# Promote existing user
+python scripts/create_admin.py --promote
+```
+
+**Database Tables:**
+- `feature_flags` - Global feature defaults
+- `user_feature_overrides` - Per-user feature settings
+- `admin_audit_log` - Admin action history
 
 ---
 
