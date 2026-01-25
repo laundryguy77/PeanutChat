@@ -2,12 +2,83 @@
 import json
 import logging
 import yaml
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from app.services.user_profile_store import get_user_profile_store, get_default_profile_template
 from app import config
 
 logger = logging.getLogger(__name__)
+
+
+class PasscodeRateLimiter:
+    """Simple in-memory rate limiter for passcode attempts.
+
+    Prevents brute-force attacks by limiting failed attempts per user.
+    """
+
+    def __init__(self, max_attempts: int = 5, lockout_seconds: int = 300):
+        self.max_attempts = max_attempts
+        self.lockout_seconds = lockout_seconds
+        # Track attempts: user_id -> (attempt_count, first_attempt_timestamp)
+        self._attempts: Dict[int, tuple] = {}
+
+    def is_locked_out(self, user_id: int) -> bool:
+        """Check if user is currently locked out."""
+        if user_id not in self._attempts:
+            return False
+
+        count, first_attempt = self._attempts[user_id]
+        elapsed = time.time() - first_attempt
+
+        # Reset if lockout period has passed
+        if elapsed > self.lockout_seconds:
+            del self._attempts[user_id]
+            return False
+
+        return count >= self.max_attempts
+
+    def get_lockout_remaining(self, user_id: int) -> int:
+        """Get remaining lockout time in seconds."""
+        if user_id not in self._attempts:
+            return 0
+
+        count, first_attempt = self._attempts[user_id]
+        if count < self.max_attempts:
+            return 0
+
+        elapsed = time.time() - first_attempt
+        remaining = self.lockout_seconds - elapsed
+        return max(0, int(remaining))
+
+    def record_failure(self, user_id: int) -> None:
+        """Record a failed passcode attempt."""
+        now = time.time()
+        if user_id in self._attempts:
+            count, first_attempt = self._attempts[user_id]
+            # Reset if lockout period has passed
+            if now - first_attempt > self.lockout_seconds:
+                self._attempts[user_id] = (1, now)
+            else:
+                self._attempts[user_id] = (count + 1, first_attempt)
+        else:
+            self._attempts[user_id] = (1, now)
+
+        count = self._attempts[user_id][0]
+        remaining = self.max_attempts - count
+        if remaining > 0:
+            logger.warning(f"Failed passcode attempt for user {user_id} ({remaining} attempts remaining)")
+        else:
+            logger.warning(f"User {user_id} locked out for {self.lockout_seconds}s after {count} failed attempts")
+
+    def record_success(self, user_id: int) -> None:
+        """Clear attempts on successful unlock."""
+        if user_id in self._attempts:
+            del self._attempts[user_id]
+
+
+# Global rate limiter instance
+_passcode_rate_limiter = PasscodeRateLimiter()
 
 
 class UserProfileService:
@@ -426,10 +497,32 @@ class UserProfileService:
     # Adult Mode
 
     async def verify_passcode(self, user_id: int, passcode: str) -> Dict[str, Any]:
-        """Verify passcode and enable adult mode."""
+        """Verify passcode and enable adult mode.
+
+        Rate-limited to prevent brute-force attacks.
+        After 5 failed attempts, user is locked out for 5 minutes.
+        """
+        # Check rate limiting first
+        if _passcode_rate_limiter.is_locked_out(user_id):
+            remaining = _passcode_rate_limiter.get_lockout_remaining(user_id)
+            logger.warning(f"Rate-limited passcode attempt for user {user_id} ({remaining}s remaining)")
+            return {
+                "success": False,
+                "error": f"Too many failed attempts. Please wait {remaining} seconds.",
+                "locked_out": True,
+                "lockout_remaining": remaining
+            }
+
         if passcode != self.ADULT_PASSCODE:
-            logger.warning(f"Failed adult mode unlock attempt for user {user_id}")
-            return {"success": False, "error": "Invalid passcode"}
+            _passcode_rate_limiter.record_failure(user_id)
+            remaining_attempts = max(0, 5 - (_passcode_rate_limiter._attempts.get(user_id, (0,))[0]))
+            error_msg = "Invalid passcode"
+            if remaining_attempts > 0:
+                error_msg += f" ({remaining_attempts} attempts remaining)"
+            return {"success": False, "error": error_msg}
+
+        # Success - clear rate limiter
+        _passcode_rate_limiter.record_success(user_id)
 
         profile = self.store.set_adult_mode(user_id, True)
         if profile:
@@ -441,10 +534,26 @@ class UserProfileService:
         return {"success": False, "error": "Failed to enable adult mode"}
 
     async def disable_adult_mode(self, user_id: int) -> Dict[str, Any]:
-        """Disable adult mode."""
+        """Disable adult mode.
+
+        CRITICAL: This also clears all session unlocks for this user,
+        ensuring full_unlock mode is also disabled across all sessions.
+        """
+        # Clear all session unlocks first (revokes full_unlock access immediately)
+        sessions_cleared = self.store.clear_user_sessions(user_id)
+        logger.info(f"Disabled adult mode for user {user_id}, cleared {sessions_cleared} session(s)")
+
+        # Also reset the database full_unlock flag
+        self.store.set_full_unlock(user_id, False)
+
+        # Finally disable adult mode itself
         profile = self.store.set_adult_mode(user_id, False)
         if profile:
-            return {"success": True, "adult_mode_enabled": False}
+            return {
+                "success": True,
+                "adult_mode_enabled": False,
+                "sessions_cleared": sessions_cleared
+            }
         return {"success": False, "error": "Failed to disable adult mode"}
 
     async def get_adult_mode_status(self, user_id: int) -> Dict[str, Any]:

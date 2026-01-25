@@ -878,12 +878,17 @@ class ToolExecutor:
         logger.info(f"[Memory] Model calling add_memory: category={category}, importance={importance}, content={content[:50]}...")
 
         memory_service = get_memory_service()
+        # Use source from args if provided (explicit vs inferred), default to inferred
+        source = args.get("source", "inferred")
+        if source not in ("explicit", "inferred"):
+            source = "inferred"
+
         result = await memory_service.add_memory(
             user_id=user_id,
             content=content,
             category=category,
             importance=importance,
-            source="inferred"
+            source=source
         )
 
         if result.get("success"):
@@ -1427,12 +1432,32 @@ class ToolExecutor:
             logger.error(f"Image-to-video error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _execute_mcp_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute an MCP tool via the MCP manager."""
-        logger.info(f"Executing MCP tool: {tool_name}")
+    async def _execute_mcp_tool(
+        self, tool_name: str, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Execute an MCP tool via the MCP manager.
+
+        SECURITY: All MCP tool executions are logged for audit purposes.
+        """
+        # Get user context for audit logging
+        ctx = get_current_context()
+        audit_user_id = user_id or (ctx.user_id if ctx else None)
+
+        logger.info(
+            f"[MCP AUDIT] User {audit_user_id} executing MCP tool: {tool_name} "
+            f"with args: {list(args.keys())}"
+        )
+
         mcp_manager = get_mcp_manager()
         result = await mcp_manager.call_tool(tool_name, args)
-        logger.info(f"MCP tool result: {result}")
+
+        # Log result status (not full content to avoid leaking sensitive data)
+        success = "error" not in result
+        logger.info(
+            f"[MCP AUDIT] User {audit_user_id} MCP tool {tool_name} "
+            f"{'succeeded' if success else 'failed'}"
+        )
+
         return result
 
     # User Profile Tool Executors

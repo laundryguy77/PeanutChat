@@ -1,5 +1,6 @@
 """MCP Server management API endpoints."""
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -10,9 +11,17 @@ from pydantic import BaseModel
 from app.middleware.auth import require_auth
 from app.models.auth_schemas import UserResponse
 from app.services.database import get_database
-from app.services.mcp_client import MCPServer, get_mcp_manager
+from app.services.mcp_client import (
+    MCPServer,
+    get_mcp_manager,
+    _validate_command_path,
+    _validate_args,
+    ALLOWED_MCP_COMMANDS,
+    ALLOWED_ENV_VARS
+)
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
+logger = logging.getLogger(__name__)
 
 
 class MCPServerCreate(BaseModel):
@@ -91,6 +100,47 @@ async def add_server(
 ):
     """Add a new MCP server configuration."""
     db = get_database()
+
+    # SECURITY: Validate command and args BEFORE storing
+    if request.transport == "stdio" and request.command:
+        # Validate command is in allowlist
+        is_valid, resolved_path, error = _validate_command_path(request.command)
+        if not is_valid:
+            logger.warning(
+                f"User {user.id} attempted to add MCP server with invalid command: "
+                f"{request.command} - {error}"
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid command: {error}. Allowed commands: {', '.join(sorted(ALLOWED_MCP_COMMANDS))}"
+            )
+
+        # Validate args don't contain dangerous patterns
+        if request.args:
+            args_valid, args_error = _validate_args(request.args)
+            if not args_valid:
+                logger.warning(
+                    f"User {user.id} attempted to add MCP server with invalid args: {args_error}"
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid arguments: {args_error}"
+                )
+
+    # Validate env vars are in allowlist
+    if request.env:
+        invalid_vars = [k for k in request.env.keys() if k not in ALLOWED_ENV_VARS]
+        if invalid_vars:
+            logger.warning(
+                f"User {user.id} attempted to add MCP server with non-allowlisted env vars: {invalid_vars}"
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Non-allowlisted environment variables: {', '.join(invalid_vars)}. "
+                       f"Allowed: {', '.join(sorted(ALLOWED_ENV_VARS))}"
+            )
+
+    logger.info(f"User {user.id} adding MCP server: {request.name} ({request.command})")
 
     # SECURITY: Use full UUID to prevent collisions
     server_id = str(uuid.uuid4())
@@ -179,13 +229,22 @@ async def connect_server(
     server = _row_to_server(row)
     manager = get_mcp_manager()
 
+    # SECURITY: Log connection attempts for audit
+    logger.info(
+        f"User {user.id} connecting to MCP server: {server.name} "
+        f"(id={server_id}, command={server.command})"
+    )
+
     success = await manager.connect_server(server)
     if not success:
+        logger.warning(f"User {user.id} failed to connect to MCP server {server_id}")
         raise HTTPException(status_code=500, detail="Failed to connect to MCP server")
 
     # Get tools from the connected server
     client = manager.get_client(server_id)
     tools = client.get_tools() if client else []
+
+    logger.info(f"User {user.id} connected to MCP server {server_id}, tools: {[t.get('name') for t in tools]}")
 
     return {
         "success": True,

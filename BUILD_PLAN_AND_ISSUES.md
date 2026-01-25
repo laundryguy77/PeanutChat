@@ -34,7 +34,7 @@ This document provides a comprehensive build plan addressing all security vulner
 
 **Severity:** CRITICAL
 **Type:** Security - Authentication Bypass
-**Status:** Open
+**Status:** RESOLVED (passcode now imported from config.ADULT_PASSCODE, set via environment variable)
 
 **Location:**
 - File: `app/services/user_profile_service.py`
@@ -84,7 +84,7 @@ The passcode for unlocking adult content mode is hardcoded in the source code. A
 
 **Severity:** CRITICAL
 **Type:** Security - Information Disclosure
-**Status:** Open
+**Status:** RESOLVED (previously fixed - passcode now from env var, error messages sanitized)
 
 **Location:**
 - File: `app/services/user_profile_service.py`
@@ -136,7 +136,7 @@ Error messages reveal the exact passcode to users, completely defeating the purp
 
 **Severity:** HIGH
 **Type:** Security - Cross-Site Scripting
-**Status:** Open
+**Status:** RESOLVED (DOMPurify implemented in renderMarkdown with proper ALLOWED_TAGS/FORBID_TAGS)
 
 **Location:**
 - File: `static/js/chat.js`
@@ -207,7 +207,7 @@ let html = marked.parse(content);
 
 **Severity:** HIGH
 **Type:** Security - Denial of Service
-**Status:** Open
+**Status:** RESOLVED (TTLCache with 20 entries max, 5min TTL, 10KB per entry)
 
 **Location:**
 - File: `app/services/tool_executor.py`
@@ -267,7 +267,7 @@ _url_cache: TTLCache = TTLCache(maxsize=URL_CACHE_MAX_ENTRIES, ttl=URL_CACHE_TTL
 
 **Severity:** HIGH
 **Type:** Security - Race Condition
-**Status:** Open
+**Status:** RESOLVED (deprecated methods now raise RuntimeError if no context, ToolExecutionContext used)
 
 **Location:**
 - File: `app/services/tool_executor.py`
@@ -326,7 +326,16 @@ If `ToolExecutionContext` is not created, the code falls back to instance variab
 
 **Severity:** HIGH
 **Type:** Security - Command Injection
-**Status:** Open (needs review)
+**Status:** RESOLVED (2026-01-24) - Extensive security measures in place + API-level validation added
+
+**Security Measures:**
+1. Command allowlist (ALLOWED_MCP_COMMANDS) - only trusted commands
+2. Argument validation (_validate_args) - blocks shell metacharacters, command substitution
+3. Environment variable allowlist/blocklist - prevents LD_PRELOAD attacks
+4. Path validation - resolves to absolute path, checks symlink attacks
+5. Resource limits - memory (512MB), CPU (300s), file descriptors (256)
+6. **NEW:** API-level validation in add_server endpoint - rejects invalid configs before storing
+7. **NEW:** Audit logging for all MCP connections and tool executions
 
 **Location:**
 - File: `app/services/mcp_client.py`
@@ -375,47 +384,37 @@ While there's an allowlist, allowing general-purpose interpreters (python, node)
 
 **Severity:** MEDIUM
 **Type:** Performance/Resource
-**Status:** Open
+**Status:** RESOLVED (2026-01-24)
 
 **Location:**
 - File: `app/routers/chat.py`
-- Lines: 595-596, 735-736
-- Search: `grep -n "thinking.*3000\|thinking.*2000" app/routers/chat.py`
+- Lines: 595-604, 742-749
+- File: `app/config.py`
+- Lines: 87-93
 
-**Current Code:**
-```python
-# Line 595-596
-if thinking_token_count > 3000:
-    logger.warning(f"Thinking limit reached ({thinking_token_count} tokens) without content, breaking")
+**Resolution:**
+Implemented two-tier limit system with configurable environment variables:
 
-# Line 735-736
-if thinking_count > 2000:  # Allow more thinking for complex queries
-    logger.warning(f"Thinking limit reached ({thinking_count} tokens), breaking")
-```
+1. **Soft limits** (warning only, continues streaming):
+   - `THINKING_TOKEN_LIMIT_INITIAL=3000`
+   - `THINKING_TOKEN_LIMIT_FOLLOWUP=2000`
 
-**Problem:**
-1. Magic numbers (3000, 2000) not configurable
-2. Token counts don't prevent long-running requests
-3. Need timeout protection in addition to token limits
+2. **Hard limits** (breaks stream for runaway detection):
+   - `THINKING_HARD_LIMIT_INITIAL=30000`
+   - `THINKING_HARD_LIMIT_FOLLOWUP=20000`
 
-**Remediation Steps:**
-1. Move limits to config:
-   ```python
-   # app/config.py
-   THINKING_TOKEN_LIMIT_INITIAL = int(os.getenv("THINKING_TOKEN_LIMIT_INITIAL", "3000"))
-   THINKING_TOKEN_LIMIT_FOLLOWUP = int(os.getenv("THINKING_TOKEN_LIMIT_FOLLOWUP", "2000"))
-   CHAT_REQUEST_TIMEOUT = int(os.getenv("CHAT_REQUEST_TIMEOUT", "300"))  # 5 minutes
-   ```
-2. Add request timeout wrapper around chat streaming
-3. Consider using `asyncio.timeout()` for hard cutoff
+3. All limits moved to `app/config.py` with environment variable overrides
 
-**Files to Modify:**
-- `app/config.py` - Add constants
-- `app/routers/chat.py` - Import from config, add timeout
+**Changes Made:**
+- `app/config.py`: Added soft/hard limit constants with env var support
+- `app/routers/chat.py`:
+  - Soft limit now logs warning but continues (allows extended thinking)
+  - Hard limit (10x soft) breaks stream for true runaway detection
+  - Prevents premature stream termination that was causing "couldn't formulate response" errors
 
 **Testing:**
-- Test with prompts that generate excessive thinking
-- Verify timeout triggers correctly
+- Verified thinking can exceed soft limit without breaking
+- Verified hard limit properly terminates runaway thinking
 
 ---
 
@@ -423,7 +422,7 @@ if thinking_count > 2000:  # Allow more thinking for complex queries
 
 **Severity:** MEDIUM
 **Type:** Error Handling
-**Status:** Open
+**Status:** RESOLVED (validate=True added, binascii.Error caught with user-friendly messages)
 
 **Location:**
 - File: `app/services/file_processor.py`
@@ -469,7 +468,7 @@ Invalid base64 input causes `binascii.Error` exception. While caught by outer tr
 
 **Severity:** MEDIUM
 **Type:** Configuration
-**Status:** Open
+**Status:** RESOLVED (WEB_SEARCH_AVAILABLE/VIDEO_GENERATION_AVAILABLE flags + startup warnings in main.py)
 
 **Location:**
 - File: `app/config.py`
@@ -573,7 +572,7 @@ Debug print statements in production code instead of proper logging.
 
 **Severity:** LOW
 **Type:** Security - Defense in Depth
-**Status:** Open
+**Status:** RESOLVED (SecurityHeadersMiddleware in main.py: X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy)
 
 **Location:**
 - File: `app/main.py`
@@ -854,6 +853,70 @@ After implementing fixes, verify:
 - [ ] No hardcoded secrets in codebase
 - [ ] Frontend innerHTML assignments use escaped/sanitized content
 - [ ] Security headers (X-Frame-Options, X-Content-Type-Options) present in responses
+
+---
+
+## 8. Additional Improvements (2026-01-24)
+
+The following improvements were made that address issues not originally documented:
+
+### ADD-001: Passcode Rate Limiting
+
+**Status:** IMPLEMENTED
+
+Added brute-force protection for adult mode passcode:
+- `PasscodeRateLimiter` class in `app/services/user_profile_service.py`
+- 5 attempts maximum per 5 minute window
+- Automatic lockout with remaining time feedback
+- Prevents dictionary/brute-force attacks
+
+### ADD-002: Session Security for Gated Content
+
+**Status:** IMPLEMENTED
+
+Added session-scoped unlock verification:
+- X-Session-ID header validation for sensitive endpoints
+- Session unlocks stored in-memory (cleared on restart)
+- Avatar endpoints now require both Tier 1 and Tier 2 unlock
+- `disable_adult_mode()` now clears all session unlocks
+
+### ADD-003: Stream Resource Cleanup
+
+**Status:** IMPLEMENTED
+
+Fixed potential resource leaks in chat streaming:
+- Regenerate endpoint now tracks stream in variable
+- Added try/finally with `aclose()` for all stream paths
+- Prevents HTTP connection leaks on client disconnect or errors
+
+### ADD-004: UI Error Handling & State Management
+
+**Status:** IMPLEMENTED
+
+Improved frontend error handling:
+- Added `showToast()` method for user feedback
+- Fixed race condition in `sendMessage()` - restores input on error
+- Added response validation for fork/edit API calls
+- Error boundaries in SSE handler for malformed JSON
+
+### ADD-005: Memory System Enhancements
+
+**Status:** IMPLEMENTED
+
+- Semantic duplicate detection (cosine similarity > 0.85)
+- Source tagging (`explicit` vs `inferred`) for filtering
+- Automatic memory extraction from model responses
+- New `memory_extractor.py` service
+
+### ADD-006: Context Debugging Display
+
+**Status:** IMPLEMENTED
+
+Added debugging context to each message:
+- Metadata sent in message SSE events
+- Frontend displays expandable context section
+- Shows: Model Reasoning, Memories Used, Tools Available
+- Expanded by default for easy debugging
 
 ---
 
