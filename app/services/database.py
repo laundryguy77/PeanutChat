@@ -175,6 +175,8 @@ class DatabaseService:
             ("008_create_mcp_servers", self._migration_008_create_mcp_servers),
             ("009_create_user_profiles", self._migration_009_create_user_profiles),
             ("010_add_full_unlock_columns", self._migration_010_add_full_unlock_columns),
+            ("011_voice_settings", self._migration_011_voice_settings),
+            ("012_admin_features", self._migration_012_admin_features),
         ]
 
         # Run pending migrations
@@ -422,6 +424,118 @@ class DatabaseService:
                     logger.info(f"Auto-migrated full_unlock for user {row['user_id']}")
             except Exception as e:
                 logger.warning(f"Failed to check user {row['user_id']} for full_unlock migration: {e}")
+
+    def _migration_011_voice_settings(self):
+        """Add voice_enabled flag to users table.
+
+        Voice settings (mode, voice, speed) are stored in user_profiles.profile_data JSON.
+        This column allows admins to disable voice features per-user.
+        """
+        self.execute("""
+            ALTER TABLE users ADD COLUMN voice_enabled INTEGER DEFAULT 1
+        """)
+
+    def _migration_012_admin_features(self):
+        """Add admin capabilities and feature flag system.
+
+        Adds:
+        - Admin columns to users table (is_admin, is_active, mode_restriction)
+        - feature_flags table for global feature settings
+        - user_feature_overrides table for per-user overrides
+        - admin_audit_log table for tracking admin actions
+        - themes table for custom themes
+        """
+        # Add admin columns to users table
+        self.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+        self.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1")
+        self.execute("ALTER TABLE users ADD COLUMN mode_restriction TEXT DEFAULT NULL")
+
+        # Create feature_flags table
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS feature_flags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feature_key TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                description TEXT,
+                default_enabled INTEGER DEFAULT 1,
+                category TEXT DEFAULT 'general',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create user_feature_overrides table
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS user_feature_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                feature_key TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                created_by INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, feature_key)
+            )
+        """)
+        self.execute("CREATE INDEX IF NOT EXISTS idx_feature_overrides_user ON user_feature_overrides(user_id)")
+
+        # Create admin_audit_log table
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT,
+                details TEXT,
+                ip_address TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (admin_id) REFERENCES users(id)
+            )
+        """)
+        self.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_admin ON admin_audit_log(admin_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_created ON admin_audit_log(created_at)")
+
+        # Create themes table
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS themes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                description TEXT,
+                css_variables TEXT NOT NULL,
+                is_system INTEGER DEFAULT 0,
+                is_enabled INTEGER DEFAULT 1,
+                created_by INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES users(id)
+            )
+        """)
+
+        # Insert default feature flags
+        default_features = [
+            ("tool_use", "Tool Use", "Allow model to use tools (web search, image gen, etc.)", "tools", 1),
+            ("web_search", "Web Search", "Allow web search tool", "tools", 1),
+            ("browse_website", "URL Browsing", "Allow URL fetching tool", "tools", 1),
+            ("image_generation", "Image Generation", "Allow image generation tool", "tools", 1),
+            ("video_generation", "Video Generation", "Allow video generation tool", "tools", 1),
+            ("memory_system", "Memory System", "Enable persistent memory", "memory", 1),
+            ("auto_memories", "Auto Memory Extraction", "Automatically extract memories from responses", "memory", 1),
+            ("knowledge_base", "Knowledge Base", "Enable knowledge base queries", "memory", 1),
+            ("tts", "Text-to-Speech", "Enable TTS for responses", "voice", 0),
+            ("stt", "Speech-to-Text", "Enable voice input", "voice", 0),
+            ("thinking_mode", "Thinking Mode", "Show model reasoning process", "display", 1),
+            ("mcp_tools", "MCP Tools", "Enable MCP server tools", "tools", 1),
+        ]
+
+        for key, name, desc, category, enabled in default_features:
+            self.execute(
+                """INSERT OR IGNORE INTO feature_flags
+                   (feature_key, display_name, description, category, default_enabled)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (key, name, desc, category, enabled)
+            )
 
     def close(self):
         """Close the database connection"""

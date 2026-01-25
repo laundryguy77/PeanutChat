@@ -33,7 +33,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Pragma"] = "no-cache"
 
         return response
-from app.routers import auth, chat, commands, knowledge, mcp, memory, models, settings, user_profile
+from app.routers import auth, chat, commands, knowledge, mcp, memory, models, settings, user_profile, voice, admin
 from app.services.ollama import ollama_service
 
 logger = logging.getLogger(__name__)
@@ -78,11 +78,18 @@ app.include_router(memory.router)
 app.include_router(models.router)
 app.include_router(settings.router)
 app.include_router(user_profile.router)
+app.include_router(voice.router)
+app.include_router(admin.router)
 
 @app.get("/")
 async def index():
     """Serve the main HTML page"""
     return FileResponse(PROJECT_ROOT / "static" / "index.html")
+
+@app.get("/admin")
+async def admin_page():
+    """Serve the admin HTML page"""
+    return FileResponse(PROJECT_ROOT / "static" / "admin.html")
 
 @app.get("/health")
 async def health_check():
