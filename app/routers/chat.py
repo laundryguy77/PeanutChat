@@ -885,28 +885,18 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             })
                         }
 
-                    # Extract memories from followup response
+                    # Queue async extraction for followup response (fire-and-forget)
                     try:
-                        from app.services.memory_extractor import extract_memories
-                        extracted_memories = extract_memories(
-                            followup_content,
-                            chat_request.message,
-                            include_implicit=False  # Only explicit tags after tool use
+                        from app.services.async_extractor import queue_extraction
+                        await queue_extraction(
+                            user_id=user.id,
+                            user_message=chat_request.message,
+                            assistant_response=followup_content,
+                            conversation_id=conv_id
                         )
-                        if extracted_memories:
-                            memory_service = get_memory_service()
-                            for mem in extracted_memories:
-                                result = await memory_service.add_memory(
-                                    user_id=user.id,
-                                    content=mem["content"],
-                                    category=mem["category"],
-                                    importance=mem["importance"],
-                                    source=mem["source"]
-                                )
-                                if result.get("success"):
-                                    logger.info(f"Auto-saved memory from followup: {mem['content'][:50]}...")
+                        logger.debug("[AsyncExtract] Queued background extraction for followup")
                     except Exception as e:
-                        logger.warning(f"Memory extraction from followup failed: {e}")
+                        logger.warning(f"Failed to queue followup extraction: {e}")
 
             else:
                 # No tool calls - add regular assistant message
@@ -934,44 +924,20 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                             })
                         }
 
-                    # For non-tool models, extract profile updates from the response
-                    if not supports_tools and collected_content:
-                        try:
-                            from app.services.profile_extractor import extract_profile_updates
-                            profile_updates = extract_profile_updates(collected_content, chat_request.message)
-                            if profile_updates:
-                                logger.info(f"Extracted {len(profile_updates)} profile updates from non-tool model response")
-                                await profile_service.update_profile(
-                                    user.id,
-                                    profile_updates,
-                                    reason="Extracted from conversation (non-tool model)"
-                                )
-                        except Exception as e:
-                            logger.warning(f"Profile extraction failed: {e}")
-
-                    # Extract memories from model response (for all models)
+                    # Queue async extraction for memory/profile updates (fire-and-forget)
+                    # Uses small model (qwen2.5-coder:3b) in background - doesn't block response
                     if collected_content:
                         try:
-                            from app.services.memory_extractor import extract_memories
-                            extracted_memories = extract_memories(
-                                collected_content,
-                                chat_request.message,
-                                include_implicit=not supports_tools  # Only implicit for non-tool models
+                            from app.services.async_extractor import queue_extraction
+                            await queue_extraction(
+                                user_id=user.id,
+                                user_message=chat_request.message,
+                                assistant_response=collected_content,
+                                conversation_id=conv_id
                             )
-                            if extracted_memories:
-                                memory_service = get_memory_service()
-                                for mem in extracted_memories:
-                                    result = await memory_service.add_memory(
-                                        user_id=user.id,
-                                        content=mem["content"],
-                                        category=mem["category"],
-                                        importance=mem["importance"],
-                                        source=mem["source"]
-                                    )
-                                    if result.get("success"):
-                                        logger.info(f"Auto-saved memory: {mem['content'][:50]}...")
+                            logger.debug("[AsyncExtract] Queued background extraction")
                         except Exception as e:
-                            logger.warning(f"Memory extraction failed: {e}")
+                            logger.warning(f"Failed to queue extraction: {e}")
 
             # === Trigger Evaluation if Needed ===
             try:
