@@ -1,6 +1,6 @@
 {
   "persona": "Test persona for UI testing - I am a helpful assistant with a friendly demeanor.",
-  "model": "qwen2.5-coder:3b",
+  "model": "taozhiyuai/llama-3-8b-lexi-uncensored:v1_q8_0",
   "temperature": 1.5,
   "top_p": 0.9,
   "top_k": 75,

@@ -59,33 +59,53 @@ class VoiceSettingsResponse(BaseModel):
 
 
 @router.post("/tts/stream")
-async def tts_stream(
+async def tts_stream_post(
     request: TTSRequest,
     user: UserResponse = Depends(require_auth),
     _: None = Depends(require_voice_enabled)
 ):
-    """Stream TTS audio via Server-Sent Events.
+    """Stream TTS audio via Server-Sent Events (POST version).
 
     Events:
     - audio: Base64-encoded audio chunk
     - done: Generation complete
     - error: Error occurred
     """
+    return await _tts_stream_impl(request.text, request.voice, request.speed)
+
+
+@router.get("/tts/stream")
+async def tts_stream_get(
+    text: str,
+    voice: str = "default",
+    speed: float = 1.0,
+    user: UserResponse = Depends(require_auth),
+    _: None = Depends(require_voice_enabled)
+):
+    """Stream TTS audio via Server-Sent Events (GET version for EventSource).
+
+    EventSource only supports GET, so this endpoint mirrors the POST version.
+    """
+    return await _tts_stream_impl(text, voice, speed)
+
+
+async def _tts_stream_impl(text: str, voice: str, speed: float):
+    """Internal implementation for TTS streaming."""
     async def generate():
         try:
             tts_service = get_tts_service()
 
             # Validate and truncate text
-            text = request.text.strip()
-            if not text:
+            text_clean = text.strip()
+            if not text_clean:
                 yield {
                     "event": "error",
                     "data": json.dumps({"error": "Text is required"})
                 }
                 return
 
-            if len(text) > config.VOICE_MAX_TTS_LENGTH:
-                text = text[:config.VOICE_MAX_TTS_LENGTH]
+            if len(text_clean) > config.VOICE_MAX_TTS_LENGTH:
+                text_clean = text_clean[:config.VOICE_MAX_TTS_LENGTH]
                 yield {
                     "event": "warning",
                     "data": json.dumps({
@@ -96,9 +116,9 @@ async def tts_stream(
             # Generate and stream audio chunks
             chunk_count = 0
             async for chunk in tts_service.generate_stream(
-                text=text,
-                voice=request.voice,
-                speed=request.speed
+                text=text_clean,
+                voice=voice,
+                speed=speed
             ):
                 chunk_count += 1
                 yield {
@@ -113,7 +133,7 @@ async def tts_stream(
                 "event": "done",
                 "data": json.dumps({
                     "chunks": chunk_count,
-                    "text_length": len(text)
+                    "text_length": len(text_clean)
                 })
             }
 

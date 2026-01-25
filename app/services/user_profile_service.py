@@ -169,9 +169,18 @@ class UserProfileService:
         self,
         user_id: int,
         updates: List[Dict[str, Any]],
-        reason: str
+        reason: str,
+        auto_enable_sections: bool = True
     ) -> Dict[str, Any]:
-        """Update specific fields in the profile."""
+        """Update specific fields in the profile.
+        
+        Args:
+            user_id: The user ID
+            updates: List of updates with path, value, operation
+            reason: Reason for the update (for logging)
+            auto_enable_sections: If True, automatically enable sensitive sections
+                                  when updating them (for questionnaire flow)
+        """
         logger.info(f"Profile update for user {user_id}: {reason}")
 
         for update in updates:
@@ -179,15 +188,20 @@ class UserProfileService:
             value = update.get("value")
             operation = update.get("operation", "set")
 
-            # Validate sensitive section access
+            # Handle sensitive section access
             section = path.split(".")[0] if path else ""
             if section in self.SENSITIVE_SECTIONS:
                 profile = self.store.get_profile(user_id)
                 if profile:
                     section_data = profile.profile_data.get(section, {})
                     if not section_data.get("enabled", False):
-                        logger.warning(f"Attempted to update disabled section: {section}")
-                        continue
+                        if auto_enable_sections:
+                            # Auto-enable the section when first field is updated
+                            logger.info(f"Auto-enabling section {section} for user {user_id}")
+                            self.store.patch_profile_field(user_id, f"{section}.enabled", True, "set")
+                        else:
+                            logger.warning(f"Attempted to update disabled section: {section}")
+                            continue
 
             self.store.patch_profile_field(user_id, path, value, operation)
 
