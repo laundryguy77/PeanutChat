@@ -110,7 +110,23 @@ export class ChatManager {
     /**
      * Stop the current generation
      */
-    stopGeneration() {
+    async stopGeneration() {
+        // First, try to cancel on server side (for long-running tools)
+        const convId = this.app.currentConversationId;
+        if (convId) {
+            try {
+                await fetch(`/api/chat/cancel/${convId}`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: this.app.getSessionHeaders()
+                });
+                console.log('[Chat] Server-side cancellation requested');
+            } catch (e) {
+                console.warn('[Chat] Failed to send cancel request:', e);
+            }
+        }
+
+        // Then abort the client-side fetch
         if (this.abortController) {
             this.abortController.abort();
             this.abortController = null;
@@ -718,6 +734,96 @@ export class ChatManager {
         this.currentThinkingContent = '';
     }
 
+    /**
+     * Add a debug context frame showing what the model received
+     * @param {Object} context - Context metadata from backend
+     */
+    appendContextDebugFrame(context) {
+        if (!this.currentAssistantMessage) return;
+
+        const debugFrame = document.createElement('div');
+        debugFrame.className = 'mb-3 debug-context-frame';
+        debugFrame.innerHTML = `
+            <details class="p-3 rounded-lg bg-gray-800/50 border border-gray-700/50 text-xs group">
+                <summary class="flex items-center gap-2 cursor-pointer text-gray-400 hover:text-gray-200 list-none">
+                    <span class="material-symbols-outlined text-sm">bug_report</span>
+                    <span>Context Debug</span>
+                    <span class="ml-auto flex items-center gap-2 text-gray-500">
+                        <span title="History messages">${context.history_count} msgs</span>
+                        <span>•</span>
+                        <span title="Available tools">${context.tool_count} tools</span>
+                        <span>•</span>
+                        <span title="Memories used">${context.memory_count} memories</span>
+                        <span class="material-symbols-outlined text-xs group-open:rotate-180 transition-transform">expand_more</span>
+                    </span>
+                </summary>
+                <div class="mt-3 space-y-3 text-gray-400">
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">Model</div>
+                        <div class="flex gap-2">
+                            <span class="px-2 py-0.5 rounded bg-gray-700">${context.model}</span>
+                            ${context.is_vision ? '<span class="px-2 py-0.5 rounded bg-blue-900/50 text-blue-300">Vision</span>' : ''}
+                            ${context.supports_tools ? '<span class="px-2 py-0.5 rounded bg-green-900/50 text-green-300">Tools</span>' : ''}
+                            ${context.think_mode ? '<span class="px-2 py-0.5 rounded bg-purple-900/50 text-purple-300">Think</span>' : ''}
+                        </div>
+                    </div>
+                    ${context.history_count > 0 ? `
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">Conversation History</div>
+                        <div class="text-gray-400">${context.history_count} messages in context</div>
+                    </div>
+                    ` : `
+                    <div>
+                        <div class="font-semibold text-yellow-400 mb-1">⚠️ No History</div>
+                        <div class="text-yellow-400/70">This is a new conversation or history failed to load</div>
+                    </div>
+                    `}
+                    ${context.memory_count > 0 ? `
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">Memories Used (${context.memory_count})</div>
+                        <ul class="list-disc list-inside text-gray-400">
+                            ${context.memories.map(m => `<li class="truncate">${this.escapeHtml(m)}</li>`).join('')}
+                        </ul>
+                    </div>
+                    ` : ''}
+                    ${context.tools && context.tools.length > 0 ? `
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">Available Tools (${context.tool_count})</div>
+                        <div class="flex flex-wrap gap-1">
+                            ${context.tools.map(t => `<span class="px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">${t}</span>`).join('')}
+                            ${context.tool_count > 10 ? `<span class="px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-500">+${context.tool_count - 10} more</span>` : ''}
+                        </div>
+                    </div>
+                    ` : ''}
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">System Prompt Preview</div>
+                        <pre class="p-2 rounded bg-gray-900/50 overflow-x-auto whitespace-pre-wrap text-[10px] leading-relaxed max-h-32 overflow-y-auto">${this.escapeHtml(context.system_prompt_preview)}</pre>
+                    </div>
+                </div>
+            </details>
+        `;
+
+        // Insert at the beginning of the bubble container (before content area)
+        // This prevents it from being wiped when contentEl.innerHTML is replaced
+        this.currentAssistantMessage.bubbleContainer.insertBefore(
+            debugFrame,
+            this.currentAssistantMessage.bubbleContainer.firstChild
+        );
+    }
+
+    /**
+     * Escape HTML to prevent XSS in debug output
+     */
+    escapeHtml(text) {
+        if (!text) return '';
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     addToolIndicator(toolName, status = 'processing') {
         if (!this.currentAssistantMessage) return null;
 
@@ -1125,6 +1231,12 @@ export class ChatManager {
             this.app.setCurrentConversation(data.id);
         }
 
+        // Debug context metadata
+        if (data.system_prompt_length !== undefined) {
+            this.currentContext = data;
+            this.appendContextDebugFrame(data);
+        }
+
         // Thinking tokens
         if (data.thinking !== undefined) {
             this.updateModelStatus('thinking');
@@ -1190,15 +1302,16 @@ export class ChatManager {
                 } else {
                     message = data.result.error || 'Failed to set title';
                 }
-            } else if (data.name === 'generate_image') {
+            } else if (data.name === 'generate_image' || data.name === 'text_to_image' || data.name === 'image') {
+                // Handle consolidated 'image' tool and legacy tool names
                 if (data.result.success && data.result.base64) {
                     message = 'Image generated';
                     // Display the image inline after the tool indicator
-                    this.displayGeneratedImage(data.result.base64, data.result.mime_type || 'image/jpeg');
+                    this.displayGeneratedImage(data.result.base64, data.result.mime_type || 'image/png');
                 } else {
                     message = data.result.error || 'Image generation failed';
                 }
-            } else if (data.name === 'text_to_video' || data.name === 'image_to_video') {
+            } else if (data.name === 'text_to_video' || data.name === 'image_to_video' || data.name === 'video') {
                 if (data.result.success && data.result.base64) {
                     message = 'Video generated';
                     // Display the video inline after the tool indicator
@@ -1237,8 +1350,17 @@ export class ChatManager {
         }
 
         // Error
-        if (data.message !== undefined && data.content === undefined) {
+        if (data.message !== undefined && data.content === undefined && !data.cancelled) {
             this.appendToAssistantMessage(`\n\nError: ${data.message}`);
+        }
+
+        // Cancelled by user
+        if (data.cancelled || (data.message && data.message.includes('cancelled'))) {
+            this.updateModelStatus('idle');
+            this.appendToAssistantMessage('\n\n*[Generation cancelled by user]*');
+            if (toolIndicator) {
+                this.updateToolIndicator(toolIndicator, 'cancelled', 'Cancelled');
+            }
         }
 
         return toolIndicator;
