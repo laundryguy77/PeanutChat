@@ -110,7 +110,23 @@ export class ChatManager {
     /**
      * Stop the current generation
      */
-    stopGeneration() {
+    async stopGeneration() {
+        // First, try to cancel on server side (for long-running tools)
+        const convId = this.app.currentConversationId;
+        if (convId) {
+            try {
+                await fetch(`/api/chat/cancel/${convId}`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: this.app.getSessionHeaders()
+                });
+                console.log('[Chat] Server-side cancellation requested');
+            } catch (e) {
+                console.warn('[Chat] Failed to send cancel request:', e);
+            }
+        }
+
+        // Then abort the client-side fetch
         if (this.abortController) {
             this.abortController.abort();
             this.abortController = null;
@@ -1285,15 +1301,16 @@ export class ChatManager {
                 } else {
                     message = data.result.error || 'Failed to set title';
                 }
-            } else if (data.name === 'generate_image') {
+            } else if (data.name === 'generate_image' || data.name === 'text_to_image' || data.name === 'image') {
+                // Handle consolidated 'image' tool and legacy tool names
                 if (data.result.success && data.result.base64) {
                     message = 'Image generated';
                     // Display the image inline after the tool indicator
-                    this.displayGeneratedImage(data.result.base64, data.result.mime_type || 'image/jpeg');
+                    this.displayGeneratedImage(data.result.base64, data.result.mime_type || 'image/png');
                 } else {
                     message = data.result.error || 'Image generation failed';
                 }
-            } else if (data.name === 'text_to_video' || data.name === 'image_to_video') {
+            } else if (data.name === 'text_to_video' || data.name === 'image_to_video' || data.name === 'video') {
                 if (data.result.success && data.result.base64) {
                     message = 'Video generated';
                     // Display the video inline after the tool indicator
@@ -1332,8 +1349,17 @@ export class ChatManager {
         }
 
         // Error
-        if (data.message !== undefined && data.content === undefined) {
+        if (data.message !== undefined && data.content === undefined && !data.cancelled) {
             this.appendToAssistantMessage(`\n\nError: ${data.message}`);
+        }
+
+        // Cancelled by user
+        if (data.cancelled || (data.message && data.message.includes('cancelled'))) {
+            this.updateModelStatus('idle');
+            this.appendToAssistantMessage('\n\n*[Generation cancelled by user]*');
+            if (toolIndicator) {
+                this.updateToolIndicator(toolIndicator, 'cancelled', 'Cancelled');
+            }
         }
 
         return toolIndicator;
