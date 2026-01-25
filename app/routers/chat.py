@@ -32,6 +32,40 @@ from app.models.auth_schemas import UserResponse
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
+# Track active generations for cancellation support
+# Key: conversation_id or request_id, Value: asyncio.Event (set when cancelled)
+_active_generations: Dict[str, asyncio.Event] = {}
+
+
+def get_cancellation_event(conv_id: str) -> asyncio.Event:
+    """Get or create a cancellation event for a conversation."""
+    if conv_id not in _active_generations:
+        _active_generations[conv_id] = asyncio.Event()
+    return _active_generations[conv_id]
+
+
+def clear_cancellation(conv_id: str):
+    """Clear the cancellation event when generation completes."""
+    if conv_id in _active_generations:
+        del _active_generations[conv_id]
+
+
+def is_cancelled(conv_id: str) -> bool:
+    """Check if a generation has been cancelled."""
+    event = _active_generations.get(conv_id)
+    return event is not None and event.is_set()
+
+
+@router.post("/cancel/{conv_id}")
+async def cancel_generation(conv_id: str, user: UserResponse = Depends(require_auth)):
+    """Cancel an active generation for a conversation."""
+    event = _active_generations.get(conv_id)
+    if event:
+        event.set()
+        logger.info(f"[Cancel] Generation cancelled for conversation {conv_id[:8]}...")
+        return {"status": "cancelled", "conversation_id": conv_id}
+    return {"status": "not_found", "conversation_id": conv_id}
+
 
 def estimate_tokens(text: str) -> int:
     """Rough token estimate: ~4 chars per token for English"""
@@ -349,6 +383,11 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
     async def event_generator():
         nonlocal conv_id, tool_ctx
         settings = get_settings()
+
+        # Set up cancellation tracking for this generation
+        cancel_event = get_cancellation_event(conv_id)
+        cancel_event.clear()  # Reset in case of previous cancelled request
+
         conv = conversation_store.get(conv_id, user_id=user.id)
 
         # If conversation not found or not owned by user, create a new one
@@ -683,16 +722,37 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
 
                 for tc in tool_calls:
                     func = tc.get("function", {})
+                    tool_name = func.get("name")
+
+                    # Check for cancellation before executing tool
+                    if is_cancelled(conv_id):
+                        logger.info(f"[Cancel] Tool execution cancelled before {tool_name}")
+                        yield {
+                            "event": "cancelled",
+                            "data": json.dumps({"message": "Generation cancelled by user"})
+                        }
+                        return
+
                     yield {
                         "event": "tool_call",
                         "data": json.dumps({
-                            "name": func.get("name"),
+                            "name": tool_name,
                             "arguments": func.get("arguments")
                         })
                     }
 
                     # Execute the tool with explicit context
                     result = await tool_executor.execute(tc, user_id=user.id, conversation_id=conv_id)
+
+                    # Check for cancellation after tool execution
+                    if is_cancelled(conv_id):
+                        logger.info(f"[Cancel] Generation cancelled after {tool_name}")
+                        yield {
+                            "event": "cancelled",
+                            "data": json.dumps({"message": "Generation cancelled by user"})
+                        }
+                        return
+
                     tool_results.append(result)
 
                     yield {
@@ -955,6 +1015,8 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                     pass  # Stream may already be closed
             # Clean up context-scoped image registry
             tool_ctx.clear_images()
+            # Clear cancellation tracking
+            clear_cancellation(conv_id)
 
     return EventSourceResponse(event_generator())
 
@@ -1108,6 +1170,10 @@ async def regenerate_response(
     await conversation_store.truncate_messages(conv_id, msg_index)
 
     async def event_generator():
+        # Set up cancellation tracking for this generation
+        cancel_event = get_cancellation_event(conv_id)
+        cancel_event.clear()  # Reset in case of previous cancelled request
+
         settings = get_settings()
 
         # Check model capabilities
@@ -1273,18 +1339,39 @@ async def regenerate_response(
             if tool_calls:
                 for tc in tool_calls:
                     func = tc.get("function", {})
+                    tool_name = func.get("name")
+
+                    # Check for cancellation before executing tool
+                    if is_cancelled(conv_id):
+                        logger.info(f"[Cancel] Tool execution cancelled before {tool_name}")
+                        yield {
+                            "event": "cancelled",
+                            "data": json.dumps({"message": "Generation cancelled by user"})
+                        }
+                        return
+
                     yield {
                         "event": "tool_call",
                         "data": json.dumps({
-                            "name": func.get("name"),
+                            "name": tool_name,
                             "arguments": func.get("arguments")
                         })
                     }
                     result = await tool_executor.execute(tc, user_id=user.id, conversation_id=conv_id)
+
+                    # Check for cancellation after tool execution
+                    if is_cancelled(conv_id):
+                        logger.info(f"[Cancel] Generation cancelled after {tool_name}")
+                        yield {
+                            "event": "cancelled",
+                            "data": json.dumps({"message": "Generation cancelled by user"})
+                        }
+                        return
+
                     yield {
                         "event": "tool_result",
                         "data": json.dumps({
-                            "name": func.get("name"),
+                            "name": tool_name,
                             "result": result
                         })
                     }
@@ -1342,6 +1429,8 @@ async def regenerate_response(
                     pass  # Stream may already be closed
             # Clean up context-scoped resources
             tool_ctx.clear_images()
+            # Clear cancellation tracking
+            clear_cancellation(conv_id)
 
     return EventSourceResponse(event_generator())
 
