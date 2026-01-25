@@ -93,6 +93,10 @@ THINKING_HARD_LIMIT_INITIAL = int(os.getenv("THINKING_HARD_LIMIT_INITIAL", "3000
 THINKING_HARD_LIMIT_FOLLOWUP = int(os.getenv("THINKING_HARD_LIMIT_FOLLOWUP", "20000"))
 CHAT_REQUEST_TIMEOUT = int(os.getenv("CHAT_REQUEST_TIMEOUT", "300"))  # 5 minutes
 
+# Extraction model for async memory/profile updates (small, fast model)
+# This model runs in background after responses to extract memories and profile updates
+EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "qwen2.5-coder:3b")
+
 # Feature availability flags (based on API key presence)
 WEB_SEARCH_AVAILABLE = bool(BRAVE_SEARCH_API_KEY)
 VIDEO_GENERATION_AVAILABLE = bool(HF_TOKEN)
