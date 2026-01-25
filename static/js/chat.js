@@ -11,7 +11,139 @@ export class ChatManager {
         this.currentThinkingContent = '';
         this.thinkingContainer = null;
         this.currentToolCalls = [];
+
+        // Status tracking
+        this.modelStatus = 'idle'; // idle, thinking, generating, using_tool
+        this.statusStartTime = null;
+        this.statusTimer = null;
+        this.abortController = null;
+
         this.initializeMarkdown();
+        this.initializeStatusBar();
+    }
+
+    /**
+     * Initialize the status bar and stop button
+     */
+    initializeStatusBar() {
+        const stopBtn = document.getElementById('stop-generation-btn');
+        if (stopBtn) {
+            stopBtn.addEventListener('click', () => this.stopGeneration());
+        }
+    }
+
+    /**
+     * Update the model status indicator
+     * @param {string} status - 'idle', 'thinking', 'generating', 'using_tool'
+     * @param {string} [toolName] - Name of the tool being used (for using_tool status)
+     */
+    updateModelStatus(status, toolName = null) {
+        this.modelStatus = status;
+        const statusBar = document.getElementById('model-status-bar');
+        const statusIcon = document.getElementById('status-icon');
+        const statusText = document.getElementById('status-text');
+        const statusDuration = document.getElementById('status-duration');
+
+        if (!statusBar) return;
+
+        if (status === 'idle') {
+            statusBar.classList.add('hidden');
+            this.stopStatusTimer();
+            return;
+        }
+
+        // Show the status bar
+        statusBar.classList.remove('hidden');
+
+        // Start timer if not already running
+        if (!this.statusTimer) {
+            this.statusStartTime = Date.now();
+            this.statusTimer = setInterval(() => {
+                if (statusDuration) {
+                    const elapsed = Math.floor((Date.now() - this.statusStartTime) / 1000);
+                    statusDuration.textContent = `${elapsed}s`;
+                }
+            }, 1000);
+        }
+
+        // Update icon and text based on status
+        const statusConfig = {
+            thinking: {
+                icon: 'psychology',
+                text: 'Thinking...',
+                iconClass: 'text-purple-400 animate-pulse'
+            },
+            generating: {
+                icon: 'edit_note',
+                text: 'Generating response...',
+                iconClass: 'text-primary animate-pulse'
+            },
+            using_tool: {
+                icon: 'build',
+                text: `Using ${toolName || 'tool'}...`,
+                iconClass: 'text-green-400 animate-spin'
+            }
+        };
+
+        const config = statusConfig[status] || statusConfig.generating;
+
+        if (statusIcon) {
+            statusIcon.textContent = config.icon;
+            statusIcon.className = `material-symbols-outlined ${config.iconClass}`;
+        }
+        if (statusText) {
+            statusText.textContent = config.text;
+        }
+    }
+
+    /**
+     * Stop the status timer
+     */
+    stopStatusTimer() {
+        if (this.statusTimer) {
+            clearInterval(this.statusTimer);
+            this.statusTimer = null;
+        }
+        this.statusStartTime = null;
+    }
+
+    /**
+     * Stop the current generation
+     */
+    async stopGeneration() {
+        // First, try to cancel on server side (for long-running tools)
+        const convId = this.app.currentConversationId;
+        if (convId) {
+            try {
+                await fetch(`/api/chat/cancel/${convId}`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: this.app.getSessionHeaders()
+                });
+                console.log('[Chat] Server-side cancellation requested');
+            } catch (e) {
+                console.warn('[Chat] Failed to send cancel request:', e);
+            }
+        }
+
+        // Then abort the client-side fetch
+        if (this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+
+        // Add a note to the current message that it was stopped
+        if (this.currentAssistantMessage && this.currentStreamContent) {
+            this.appendToAssistantMessage('\n\n*[Generation stopped by user]*');
+        }
+
+        this.isStreaming = false;
+        this.updateModelStatus('idle');
+
+        const sendBtn = document.getElementById('send-btn');
+        if (sendBtn) sendBtn.disabled = false;
+
+        this.showToast('Generation stopped', 'info', 2000);
     }
 
     /**
@@ -603,6 +735,96 @@ export class ChatManager {
         this.currentThinkingContent = '';
     }
 
+    /**
+     * Add a debug context frame showing what the model received
+     * @param {Object} context - Context metadata from backend
+     */
+    appendContextDebugFrame(context) {
+        if (!this.currentAssistantMessage) return;
+
+        const debugFrame = document.createElement('div');
+        debugFrame.className = 'mb-3 debug-context-frame';
+        debugFrame.innerHTML = `
+            <details class="p-3 rounded-lg bg-gray-800/50 border border-gray-700/50 text-xs group">
+                <summary class="flex items-center gap-2 cursor-pointer text-gray-400 hover:text-gray-200 list-none">
+                    <span class="material-symbols-outlined text-sm">bug_report</span>
+                    <span>Context Debug</span>
+                    <span class="ml-auto flex items-center gap-2 text-gray-500">
+                        <span title="History messages">${context.history_count} msgs</span>
+                        <span>•</span>
+                        <span title="Available tools">${context.tool_count} tools</span>
+                        <span>•</span>
+                        <span title="Memories used">${context.memory_count} memories</span>
+                        <span class="material-symbols-outlined text-xs group-open:rotate-180 transition-transform">expand_more</span>
+                    </span>
+                </summary>
+                <div class="mt-3 space-y-3 text-gray-400">
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">Model</div>
+                        <div class="flex gap-2">
+                            <span class="px-2 py-0.5 rounded bg-gray-700">${context.model}</span>
+                            ${context.is_vision ? '<span class="px-2 py-0.5 rounded bg-blue-900/50 text-blue-300">Vision</span>' : ''}
+                            ${context.supports_tools ? '<span class="px-2 py-0.5 rounded bg-green-900/50 text-green-300">Tools</span>' : ''}
+                            ${context.think_mode ? '<span class="px-2 py-0.5 rounded bg-purple-900/50 text-purple-300">Think</span>' : ''}
+                        </div>
+                    </div>
+                    ${context.history_count > 0 ? `
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">Conversation History</div>
+                        <div class="text-gray-400">${context.history_count} messages in context</div>
+                    </div>
+                    ` : `
+                    <div>
+                        <div class="font-semibold text-yellow-400 mb-1">⚠️ No History</div>
+                        <div class="text-yellow-400/70">This is a new conversation or history failed to load</div>
+                    </div>
+                    `}
+                    ${context.memory_count > 0 ? `
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">Memories Used (${context.memory_count})</div>
+                        <ul class="list-disc list-inside text-gray-400">
+                            ${context.memories.map(m => `<li class="truncate">${this.escapeHtml(m)}</li>`).join('')}
+                        </ul>
+                    </div>
+                    ` : ''}
+                    ${context.tools && context.tools.length > 0 ? `
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">Available Tools (${context.tool_count})</div>
+                        <div class="flex flex-wrap gap-1">
+                            ${context.tools.map(t => `<span class="px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">${t}</span>`).join('')}
+                            ${context.tool_count > 10 ? `<span class="px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-500">+${context.tool_count - 10} more</span>` : ''}
+                        </div>
+                    </div>
+                    ` : ''}
+                    <div>
+                        <div class="font-semibold text-gray-300 mb-1">System Prompt Preview</div>
+                        <pre class="p-2 rounded bg-gray-900/50 overflow-x-auto whitespace-pre-wrap text-[10px] leading-relaxed max-h-32 overflow-y-auto">${this.escapeHtml(context.system_prompt_preview)}</pre>
+                    </div>
+                </div>
+            </details>
+        `;
+
+        // Insert at the beginning of the bubble container (before content area)
+        // This prevents it from being wiped when contentEl.innerHTML is replaced
+        this.currentAssistantMessage.bubbleContainer.insertBefore(
+            debugFrame,
+            this.currentAssistantMessage.bubbleContainer.firstChild
+        );
+    }
+
+    /**
+     * Escape HTML to prevent XSS in debug output
+     */
+    escapeHtml(text) {
+        if (!text) return '';
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     addToolIndicator(toolName, status = 'processing') {
         if (!this.currentAssistantMessage) return null;
 
@@ -792,11 +1014,16 @@ export class ChatManager {
             return;
         }
 
+        // Create abort controller for this request
+        this.abortController = new AbortController();
+        this.updateModelStatus('generating');
+
         try {
             const response = await fetch(`/api/chat/conversations/${convId}/regenerate/${messageId}`, {
                 method: 'POST',
                 headers: this.app.getSessionHeaders(),  // Include session ID for adult content gating
-                credentials: 'include'
+                credentials: 'include',
+                signal: this.abortController.signal
             });
             if (!response.ok) throw new Error('Failed to regenerate');
 
@@ -807,17 +1034,23 @@ export class ChatManager {
             await this.handleSSEStream(response);
             await this.app.loadConversation(convId);
         } catch (error) {
-            console.error('[Regenerate] Failed to regenerate response:', error);
-            this.showToast('Failed to regenerate response. Please try again.', 'error');
-            // Remove the typing indicator if it's showing
-            if (this.currentAssistantMessage) {
-                const typing = this.currentAssistantMessage.contentEl?.querySelector('.typing-indicator');
-                if (typing) typing.remove();
-                this.currentAssistantMessage.contentEl.innerHTML = '<span class="text-red-400">Failed to regenerate response.</span>';
+            if (error.name === 'AbortError') {
+                console.log('[Regenerate] Aborted by user');
+            } else {
+                console.error('[Regenerate] Failed to regenerate response:', error);
+                this.showToast('Failed to regenerate response. Please try again.', 'error');
+                // Remove the typing indicator if it's showing
+                if (this.currentAssistantMessage) {
+                    const typing = this.currentAssistantMessage.contentEl?.querySelector('.typing-indicator');
+                    if (typing) typing.remove();
+                    this.currentAssistantMessage.contentEl.innerHTML = '<span class="text-red-400">Failed to regenerate response.</span>';
+                }
             }
         } finally {
             this.isStreaming = false;
             this.currentAssistantMessage = null;
+            this.abortController = null;
+            this.updateModelStatus('idle');
             document.getElementById('send-btn').disabled = false;
         }
     }
@@ -910,6 +1143,12 @@ export class ChatManager {
         this.isStreaming = true;
         this.totalStreamTokens = 0;
 
+        // Create abort controller for this request
+        this.abortController = new AbortController();
+
+        // Update status to show we're starting
+        this.updateModelStatus(think ? 'thinking' : 'generating');
+
         const sendBtn = document.getElementById('send-btn');
         sendBtn.disabled = true;
 
@@ -926,6 +1165,7 @@ export class ChatManager {
                 method: 'POST',
                 headers,
                 credentials: 'include',
+                signal: this.abortController.signal,
                 body: JSON.stringify({
                     message: text,
                     images: images.length > 0 ? images : undefined,
@@ -937,10 +1177,16 @@ export class ChatManager {
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             await this.handleSSEStream(response);
         } catch (error) {
-            this.appendToAssistantMessage(`Error: ${error.message}`);
+            if (error.name === 'AbortError') {
+                console.log('[Chat] Generation aborted by user');
+            } else {
+                this.appendToAssistantMessage(`Error: ${error.message}`);
+            }
         } finally {
             this.isStreaming = false;
             this.currentAssistantMessage = null;
+            this.abortController = null;
+            this.updateModelStatus('idle');
             sendBtn.disabled = false;
         }
     }
@@ -986,18 +1232,27 @@ export class ChatManager {
             this.app.setCurrentConversation(data.id);
         }
 
+        // Debug context metadata
+        if (data.system_prompt_length !== undefined) {
+            this.currentContext = data;
+            this.appendContextDebugFrame(data);
+        }
+
         // Thinking tokens
         if (data.thinking !== undefined) {
+            this.updateModelStatus('thinking');
             this.appendThinkingContent(data.thinking);
         }
 
         // Thinking done
         if (data.thinking_done) {
+            this.updateModelStatus('generating');
             this.finishThinking();
         }
 
         // Content tokens
         if (data.content !== undefined) {
+            this.updateModelStatus('generating');
             this.appendToAssistantMessage(data.content);
 
             // Update context usage estimate
@@ -1008,6 +1263,7 @@ export class ChatManager {
 
         // Tool call
         if (data.name && data.arguments !== undefined) {
+            this.updateModelStatus('using_tool', data.name);
             toolIndicator = this.addToolIndicator(data.name, 'processing');
             // Track tool call for log
             this.currentToolCalls.push({
@@ -1021,6 +1277,8 @@ export class ChatManager {
 
         // Tool result
         if (data.result !== undefined) {
+            // Switch back to generating after tool completes
+            this.updateModelStatus('generating');
             const status = data.result.success ? 'complete' : 'error';
             let message = data.result.success ? 'Complete' : data.result.error;
 
@@ -1045,15 +1303,16 @@ export class ChatManager {
                 } else {
                     message = data.result.error || 'Failed to set title';
                 }
-            } else if (data.name === 'generate_image') {
+            } else if (data.name === 'generate_image' || data.name === 'text_to_image' || data.name === 'image') {
+                // Handle consolidated 'image' tool and legacy tool names
                 if (data.result.success && data.result.base64) {
                     message = 'Image generated';
                     // Display the image inline after the tool indicator
-                    this.displayGeneratedImage(data.result.base64, data.result.mime_type || 'image/jpeg');
+                    this.displayGeneratedImage(data.result.base64, data.result.mime_type || 'image/png');
                 } else {
                     message = data.result.error || 'Image generation failed';
                 }
-            } else if (data.name === 'text_to_video' || data.name === 'image_to_video') {
+            } else if (data.name === 'text_to_video' || data.name === 'image_to_video' || data.name === 'video') {
                 if (data.result.success && data.result.base64) {
                     message = 'Video generated';
                     // Display the video inline after the tool indicator
@@ -1120,8 +1379,17 @@ export class ChatManager {
         }
 
         // Error
-        if (data.message !== undefined && data.content === undefined) {
+        if (data.message !== undefined && data.content === undefined && !data.cancelled) {
             this.appendToAssistantMessage(`\n\nError: ${data.message}`);
+        }
+
+        // Cancelled by user
+        if (data.cancelled || (data.message && data.message.includes('cancelled'))) {
+            this.updateModelStatus('idle');
+            this.appendToAssistantMessage('\n\n*[Generation cancelled by user]*');
+            if (toolIndicator) {
+                this.updateToolIndicator(toolIndicator, 'cancelled', 'Cancelled');
+            }
         }
 
         return toolIndicator;

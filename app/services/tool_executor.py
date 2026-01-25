@@ -211,6 +211,7 @@ class ToolExecutor:
         }
         name = tool_name_map.get(name, name)
 
+        # Core tools
         if name == "web_search":
             return await self._execute_web_search(arguments)
         elif name == "browse_website":
@@ -225,36 +226,65 @@ class ToolExecutor:
             return await self._execute_query_memory(arguments, effective_user_id)
         elif name == "set_conversation_title":
             return await self._execute_set_conversation_title(arguments, effective_conv_id)
-        elif name == "generate_video":
-            return await self._execute_generate_video(arguments, effective_user_id)
+
+        # Consolidated IMAGE tool (routes by action parameter)
+        elif name == "image":
+            return await self._execute_image_tool(arguments, effective_user_id)
+        # Legacy image tool names (backward compatibility)
         elif name == "text_to_image":
-            return await self._execute_text_to_image(arguments, effective_user_id)
+            arguments["action"] = "generate"
+            return await self._execute_image_tool(arguments, effective_user_id)
         elif name == "image_to_image":
-            return await self._execute_image_to_image(arguments)
+            arguments["action"] = "transform"
+            return await self._execute_image_tool(arguments, effective_user_id)
         elif name == "inpaint_image":
-            return await self._execute_inpaint_image(arguments)
+            arguments["action"] = "inpaint"
+            return await self._execute_image_tool(arguments, effective_user_id)
         elif name == "upscale_image":
-            return await self._execute_upscale_image(arguments)
-        elif name == "text_to_video":
-            return await self._execute_text_to_video(arguments)
+            arguments["action"] = "upscale"
+            return await self._execute_image_tool(arguments, effective_user_id)
+
+        # Consolidated VIDEO tool (routes by action parameter)
+        elif name == "video":
+            return await self._execute_video_tool(arguments, effective_user_id)
+        # Legacy video tool names (backward compatibility)
+        elif name == "generate_video" or name == "text_to_video":
+            arguments["action"] = "generate"
+            return await self._execute_video_tool(arguments, effective_user_id)
         elif name == "image_to_video":
-            return await self._execute_image_to_video(arguments)
+            arguments["action"] = "animate"
+            return await self._execute_video_tool(arguments, effective_user_id)
+
+        # Consolidated USER_PROFILE tool (routes by action parameter)
+        elif name == "user_profile":
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
+        # Legacy profile tool names (backward compatibility)
         elif name == "user_profile_read":
-            return await self._execute_user_profile_read(arguments, effective_user_id)
+            arguments["action"] = "read"
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
         elif name == "user_profile_update":
-            return await self._execute_user_profile_update(arguments, effective_user_id)
+            arguments["action"] = "update"
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
         elif name == "user_profile_log_event":
-            return await self._execute_user_profile_log_event(arguments, effective_user_id)
+            arguments["action"] = "log_event"
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
         elif name == "user_profile_enable_section":
-            return await self._execute_user_profile_enable_section(arguments, effective_user_id)
+            arguments["action"] = "enable_section"
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
         elif name == "user_profile_add_nested":
-            return await self._execute_user_profile_add_nested(arguments, effective_user_id)
+            arguments["action"] = "add_nested"
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
         elif name == "user_profile_query":
-            return await self._execute_user_profile_query(arguments, effective_user_id)
+            arguments["action"] = "query"
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
         elif name == "user_profile_export":
-            return await self._execute_user_profile_export(arguments, effective_user_id)
+            arguments["action"] = "export"
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
         elif name == "user_profile_reset":
-            return await self._execute_user_profile_reset(arguments, effective_user_id)
+            arguments["action"] = "reset"
+            return await self._execute_user_profile_tool(arguments, effective_user_id)
+
+        # MCP tools
         elif name.startswith("mcp_"):
             # Route to MCP manager for MCP tools
             return await self._execute_mcp_tool(name, arguments)
@@ -841,6 +871,12 @@ class ToolExecutor:
         if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
+        content = args.get("content", "")
+        category = args.get("category", "general")
+        importance = args.get("importance", 5)
+
+        logger.info(f"[Memory] Model calling add_memory: category={category}, importance={importance}, content={content[:50]}...")
+
         memory_service = get_memory_service()
         # Use source from args if provided (explicit vs inferred), default to inferred
         source = args.get("source", "inferred")
@@ -849,11 +885,17 @@ class ToolExecutor:
 
         result = await memory_service.add_memory(
             user_id=user_id,
-            content=args.get("content", ""),
-            category=args.get("category", "general"),
-            importance=args.get("importance", 5),
+            content=content,
+            category=category,
+            importance=importance,
             source=source
         )
+
+        if result.get("success"):
+            logger.info(f"[Memory] Memory stored successfully: id={result.get('id')}")
+        else:
+            logger.warning(f"[Memory] Failed to store memory: {result.get('error')}")
+
         return result
 
     async def _execute_query_memory(
@@ -863,15 +905,21 @@ class ToolExecutor:
         if not user_id:
             return {"success": False, "error": "User not authenticated"}
 
+        query = args.get("query", "")
+        logger.info(f"[Memory] Model calling query_memory: query={query[:50]}...")
+
         memory_service = get_memory_service()
         results = await memory_service.query_memories(
             user_id=user_id,
-            query=args.get("query", ""),
+            query=query,
             top_k=5
         )
+
+        logger.info(f"[Memory] Query returned {len(results)} memories")
+
         return {
             "success": True,
-            "query": args.get("query", ""),
+            "query": query,
             "results": results,
             "count": len(results)
         }
@@ -1050,6 +1098,23 @@ class ToolExecutor:
         except Exception as e:
             logger.warning(f"Failed to get avatar style: {e}")
         return ""
+
+    async def _execute_image_tool(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Consolidated image tool - routes by action parameter."""
+        action = args.get("action", "generate")
+
+        if action == "generate":
+            return await self._execute_text_to_image(args, user_id)
+        elif action == "transform":
+            return await self._execute_image_to_image(args)
+        elif action == "inpaint":
+            return await self._execute_inpaint_image(args)
+        elif action == "upscale":
+            return await self._execute_upscale_image(args)
+        else:
+            return {"success": False, "error": f"Unknown image action: {action}. Use: generate, transform, inpaint, upscale"}
 
     async def _execute_text_to_image(
         self, args: Dict[str, Any], user_id: Optional[int] = None
@@ -1276,6 +1341,19 @@ class ToolExecutor:
             logger.error(f"Upscale error: {e}")
             return {"success": False, "error": str(e)}
 
+    async def _execute_video_tool(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Consolidated video tool - routes by action parameter."""
+        action = args.get("action", "generate")
+
+        if action == "generate":
+            return await self._execute_text_to_video(args)
+        elif action == "animate":
+            return await self._execute_image_to_video(args)
+        else:
+            return {"success": False, "error": f"Unknown video action: {action}. Use: generate, animate"}
+
     async def _execute_text_to_video(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Generate video from text using HuggingFace Spaces via Playwright."""
         prompt = args.get("prompt", "").strip()
@@ -1383,6 +1461,31 @@ class ToolExecutor:
         return result
 
     # User Profile Tool Executors
+
+    async def _execute_user_profile_tool(
+        self, args: Dict[str, Any], user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Consolidated user profile tool - routes by action parameter."""
+        action = args.get("action", "read")
+
+        if action == "read":
+            return await self._execute_user_profile_read(args, user_id)
+        elif action == "update":
+            return await self._execute_user_profile_update(args, user_id)
+        elif action == "log_event":
+            return await self._execute_user_profile_log_event(args, user_id)
+        elif action == "enable_section":
+            return await self._execute_user_profile_enable_section(args, user_id)
+        elif action == "add_nested":
+            return await self._execute_user_profile_add_nested(args, user_id)
+        elif action == "query":
+            return await self._execute_user_profile_query(args, user_id)
+        elif action == "export":
+            return await self._execute_user_profile_export(args, user_id)
+        elif action == "reset":
+            return await self._execute_user_profile_reset(args, user_id)
+        else:
+            return {"success": False, "error": f"Unknown profile action: {action}. Use: read, update, log_event, enable_section, add_nested, query, export, reset"}
 
     async def _execute_user_profile_read(
         self, args: Dict[str, Any], user_id: Optional[int] = None

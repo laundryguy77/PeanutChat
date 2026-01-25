@@ -255,34 +255,44 @@ Note: Profile data is already loaded - you don't need to read it with tools.
 """
 
     TOOL_INSTRUCTIONS = """
-## TOOL USAGE
+## AVAILABLE TOOLS (10 total)
 
-### Available Tools
-- **add_memory**: Store important user information (name, preferences, projects)
-- **query_memory**: Search what you know about this user
-- **web_search**: Search for current information
+### Memory Tools
+- **add_memory**: Store important information about the user
+  - Categories: 'preference', 'personal', 'topic', 'instruction'
+  - CRITICAL: If user says "remember this" -> use add_memory IMMEDIATELY
+- **query_memory**: Search what you know about the user
+
+### Information Tools
+- **web_search**: Search the web for current information
 - **browse_website**: Visit a specific URL
 - **search_conversations**: Search past conversations
-- **search_knowledge_base**: Search uploaded documents
+- **search_knowledge_base**: Search user's uploaded documents
 
-### When to Use Tools
-- User asks to "remember" something → add_memory immediately
-- User asks about current events/news → web_search
-- User references their documents → search_knowledge_base
-- You need to recall user-specific info → query_memory
+### Image Tool
+- **image**: Generate and manipulate images (action parameter required)
+  - action="generate": Create image from text prompt
+  - action="transform": Modify existing image with prompt
+  - action="inpaint": Edit masked regions of image
+  - action="upscale": Enhance image resolution
+  - ALWAYS use when user asks to "create", "generate", "make", or "draw" an image
 
-### When NOT to Use Tools (Respond Directly)
-- Questions answerable from your training knowledge
-- Creative writing, analysis, explanations
-- General conversation or opinions
-- Follow-up questions in an ongoing discussion
-- User's question contains all needed information
+### Video Tool
+- **video**: Generate videos (action parameter required)
+  - action="generate": Create video from text description
+  - action="animate": Turn a still image into video
 
-### Critical Rules
-1. **Tools are optional** - Most questions don't need tools
-2. **Respond directly by default** - Only use tools when genuinely needed
-3. **Never mix tool syntax into responses** - Tool calls happen separately
-4. **One tool at a time** - Don't chain unnecessary tool calls
+### Profile Tool
+- **user_profile**: Manage user profile (action parameter required)
+  - action="read": Load profile sections
+  - action="update": Modify profile fields
+  - action="query": Ask natural language questions about user
+
+## TOOL USAGE RULES
+1. **Image Requests**: When user asks to generate/create/make an image -> use `image` tool with action="generate" IMMEDIATELY
+2. **Memory Priority**: Check memory before answering questions about the user
+3. **Active Learning**: When you discover important info, add it to memory
+4. **Explicit Requests**: When user asks to remember something, add it immediately
 """
 
     def build_prompt(
