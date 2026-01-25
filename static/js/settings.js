@@ -63,6 +63,48 @@ export class SettingsManager {
                 compactionSettings.style.pointerEvents = compactionEnabled.checked ? 'auto' : 'none';
             });
         }
+
+        // Voice settings
+        this.setupRangeInput('tts-speed', 'tts-speed-value', 'x');
+        this.setupVoiceSettingsListeners();
+    }
+
+    setupVoiceSettingsListeners() {
+        const voiceMode = document.getElementById('voice-mode');
+        const ttsSpeedContainer = document.getElementById('tts-speed-container');
+        const sttLanguageContainer = document.getElementById('stt-language-container');
+
+        if (voiceMode) {
+            voiceMode.addEventListener('change', () => {
+                this.updateVoiceUIState();
+            });
+        }
+    }
+
+    updateVoiceUIState() {
+        const voiceMode = document.getElementById('voice-mode');
+        const ttsSpeedContainer = document.getElementById('tts-speed-container');
+        const sttLanguageContainer = document.getElementById('stt-language-container');
+        const autoPlayContainer = document.getElementById('voice-auto-play')?.closest('.flex');
+
+        if (!voiceMode) return;
+
+        const mode = voiceMode.value;
+        const showTTS = mode === 'tts_only' || mode === 'conversation';
+        const showSTT = mode === 'transcribe_only' || mode === 'conversation';
+
+        if (ttsSpeedContainer) {
+            ttsSpeedContainer.style.opacity = showTTS ? '1' : '0.5';
+            ttsSpeedContainer.style.pointerEvents = showTTS ? 'auto' : 'none';
+        }
+        if (autoPlayContainer) {
+            autoPlayContainer.style.opacity = showTTS ? '1' : '0.5';
+            autoPlayContainer.style.pointerEvents = showTTS ? 'auto' : 'none';
+        }
+        if (sttLanguageContainer) {
+            sttLanguageContainer.style.opacity = showSTT ? '1' : '0.5';
+            sttLanguageContainer.style.pointerEvents = showSTT ? 'auto' : 'none';
+        }
     }
 
     setTheme(theme) {
@@ -137,9 +179,60 @@ export class SettingsManager {
             const response = await fetch('/api/settings');
             this.settings = await response.json();
             this.updateUI();
+
+            // Also load voice settings
+            await this.loadVoiceSettings();
         } catch (error) {
             console.error('Failed to load settings:', error);
         }
+    }
+
+    async loadVoiceSettings() {
+        try {
+            const response = await fetch('/api/voice/settings', { credentials: 'include' });
+            if (response.ok) {
+                const voiceSettings = await response.json();
+                this.updateVoiceUI(voiceSettings);
+            }
+        } catch (error) {
+            console.warn('Failed to load voice settings:', error);
+        }
+    }
+
+    updateVoiceUI(settings) {
+        const voiceMode = document.getElementById('voice-mode');
+        const ttsSpeed = document.getElementById('tts-speed');
+        const ttsSpeedValue = document.getElementById('tts-speed-value');
+        const autoPlay = document.getElementById('voice-auto-play');
+        const sttLanguage = document.getElementById('stt-language');
+        const statusText = document.getElementById('voice-status-text');
+        const voiceSection = document.getElementById('voice-settings-section');
+
+        if (voiceMode) voiceMode.value = settings.voice_mode || 'disabled';
+        if (ttsSpeed) {
+            ttsSpeed.value = settings.tts_speed || 1.0;
+            if (ttsSpeedValue) ttsSpeedValue.textContent = `${settings.tts_speed || 1.0}x`;
+        }
+        if (autoPlay) autoPlay.checked = settings.auto_play || false;
+        if (sttLanguage) sttLanguage.value = settings.stt_language || 'en';
+
+        // Update status text
+        if (statusText) {
+            if (settings.voice_enabled) {
+                statusText.textContent = 'Voice features are available';
+                statusText.classList.remove('text-gray-500');
+                statusText.classList.add('text-green-400');
+            } else {
+                statusText.textContent = 'Voice features disabled on server (VOICE_ENABLED=false)';
+            }
+        }
+
+        // Show/hide section based on server status
+        if (voiceSection && !settings.voice_enabled) {
+            // Keep section visible but show disabled state
+        }
+
+        this.updateVoiceUIState();
     }
 
     updateUI() {
@@ -211,6 +304,10 @@ export class SettingsManager {
 
             if (response.ok) {
                 this.settings = await response.json();
+
+                // Save voice settings
+                await this.saveVoiceSettings();
+
                 this.hideModal();
                 console.log('Settings saved:', this.settings);
             } else {
@@ -219,6 +316,39 @@ export class SettingsManager {
         } catch (error) {
             console.error('Failed to save settings:', error);
             alert('Failed to save settings. Please try again.');
+        }
+    }
+
+    async saveVoiceSettings() {
+        const voiceMode = document.getElementById('voice-mode');
+        const ttsSpeed = document.getElementById('tts-speed');
+        const autoPlay = document.getElementById('voice-auto-play');
+        const sttLanguage = document.getElementById('stt-language');
+
+        const voiceSettings = {
+            voice_mode: voiceMode?.value || 'disabled',
+            tts_speed: parseFloat(ttsSpeed?.value || 1.0),
+            auto_play: autoPlay?.checked || false,
+            stt_language: sttLanguage?.value || 'en',
+            tts_voice: 'default'
+        };
+
+        try {
+            const response = await fetch('/api/voice/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(voiceSettings)
+            });
+
+            if (response.ok) {
+                // Update voice manager if available
+                if (this.app.voiceManager) {
+                    await this.app.voiceManager.loadSettings();
+                }
+            }
+        } catch (error) {
+            console.warn('Failed to save voice settings:', error);
         }
     }
 

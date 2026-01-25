@@ -179,7 +179,7 @@ class AuthService:
     def get_user_by_id(self, user_id: int) -> Optional[UserResponse]:
         """Get user by ID"""
         user = self.db.fetchone(
-            "SELECT id, username, email, created_at FROM users WHERE id = ?",
+            "SELECT id, username, email, is_admin, is_active, created_at FROM users WHERE id = ?",
             (user_id,)
         )
         if not user:
@@ -189,6 +189,8 @@ class AuthService:
             id=user["id"],
             username=user["username"],
             email=user["email"],
+            is_admin=bool(user["is_admin"]) if user["is_admin"] is not None else False,
+            is_active=bool(user["is_active"]) if user["is_active"] is not None else True,
             created_at=user["created_at"]
         )
 

@@ -1,6 +1,7 @@
 // Main Application Controller
 import { ChatManager } from './chat.js';
 import { SettingsManager } from './settings.js';
+import { initVoiceManager, voiceManager } from './voice.js';
 
 class App {
     constructor() {
@@ -131,6 +132,9 @@ class App {
         await this.loadModels();
         await this.loadConversations();
         await this.updateUsageGauges();
+
+        // Initialize voice manager
+        this.voiceManager = initVoiceManager(this);
 
         // Initialize profile to get assistant name
         if (typeof profileManager !== 'undefined') {

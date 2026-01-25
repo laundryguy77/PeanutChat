@@ -1376,6 +1376,11 @@ export class ChatManager {
         if (data.finish_reason !== undefined) {
             // Stream completed - refresh VRAM gauge
             this.app.updateUsageGauges();
+
+            // Auto-speak the response if voice is enabled
+            if (this.app.voiceManager && this.currentStreamContent) {
+                this.app.voiceManager.autoSpeak(this.currentStreamContent);
+            }
         }
 
         // Error

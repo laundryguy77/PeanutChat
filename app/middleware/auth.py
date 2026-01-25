@@ -52,6 +52,7 @@ async def require_auth(
     """
     Dependency that requires authentication.
     Raises 401 if not authenticated.
+    Raises 403 if account is deactivated.
     """
     if not user:
         raise HTTPException(
@@ -59,6 +60,15 @@ async def require_auth(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"}
         )
+
+    # Check if account is active
+    if not user.is_active:
+        logger.warning(f"Deactivated user {user.id} attempted access")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account deactivated"
+        )
+
     return user
 
 

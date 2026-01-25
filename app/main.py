@@ -33,7 +33,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Pragma"] = "no-cache"
 
         return response
-from app.routers import auth, chat, commands, knowledge, mcp, memory, models, settings, user_profile
+from app.routers import admin, auth, chat, commands, knowledge, mcp, memory, models, settings, user_profile, voice
 from app.services.ollama import ollama_service
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,7 @@ os.makedirs(avatars_dir, exist_ok=True)
 app.mount("/avatars", StaticFiles(directory=avatars_dir), name="avatars")
 
 # Include routers
+app.include_router(admin.router)
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(commands.router)
@@ -78,6 +79,7 @@ app.include_router(memory.router)
 app.include_router(models.router)
 app.include_router(settings.router)
 app.include_router(user_profile.router)
+app.include_router(voice.router)
 
 @app.get("/")
 async def index():
@@ -112,9 +114,20 @@ async def startup_security_check():
         logger.warning("BRAVE_SEARCH_API_KEY not set - web search feature disabled")
     if not config.VIDEO_GENERATION_AVAILABLE:
         logger.warning("HF_TOKEN not set - video generation feature disabled")
+    if not config.VOICE_AVAILABLE:
+        logger.info("VOICE_ENABLED not set - voice features disabled")
+    else:
+        logger.info(f"Voice features enabled - TTS: {config.TTS_MODEL}, STT: whisper-{config.STT_MODEL}")
 
 
 @app.on_event("shutdown")
 async def shutdown_cleanup():
     """Clean up resources on shutdown"""
     await ollama_service.close()
+
+    # Clean up voice services if enabled
+    if config.VOICE_ENABLED:
+        from app.services.tts_service import cleanup_tts_service
+        from app.services.stt_service import cleanup_stt_service
+        await cleanup_tts_service()
+        await cleanup_stt_service()

@@ -15,6 +15,7 @@ from app.services import compaction_service
 from app.services.mcp_client import get_mcp_manager
 from app.services.user_profile_service import get_user_profile_service
 from app.services.evaluator_service import get_evaluator_service
+from app.services.feature_service import get_feature_service
 
 logger = logging.getLogger(__name__)
 from app.services.tool_executor import tool_executor, create_context
@@ -417,6 +418,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         mcp_manager = get_mcp_manager()
         mcp_tools = mcp_manager.get_tools_as_openai_format()
         tools = get_tools_for_model(supports_tools=supports_tools, supports_vision=is_vision, mcp_tools=mcp_tools)
+
+        # Filter tools based on user's feature flags
+        if tools:
+            feature_service = get_feature_service()
+            tools = feature_service.filter_tools_for_user(tools, user.id)
+            logger.debug(f"Filtered tools for user {user.id}: {len(tools)} available")
 
         # Register images for tool use (only if vision model)
         if chat_request.images and is_vision:
@@ -1150,6 +1157,12 @@ async def regenerate_response(
         mcp_manager = get_mcp_manager()
         mcp_tools = mcp_manager.get_tools_as_openai_format()
         tools = get_tools_for_model(supports_tools=supports_tools, supports_vision=is_vision, mcp_tools=mcp_tools)
+
+        # Filter tools based on user's feature flags
+        if tools:
+            feature_service = get_feature_service()
+            tools = feature_service.filter_tools_for_user(tools, user.id)
+            logger.debug(f"Regenerate: Filtered tools for user {user.id}: {len(tools)} available")
 
         # Get updated history (without the removed messages, with user verification)
         history = conversation_store.get_messages_for_api(conv_id, user_id=user.id)

@@ -175,6 +175,8 @@ class DatabaseService:
             ("008_create_mcp_servers", self._migration_008_create_mcp_servers),
             ("009_create_user_profiles", self._migration_009_create_user_profiles),
             ("010_add_full_unlock_columns", self._migration_010_add_full_unlock_columns),
+            ("011_add_voice_settings", self._migration_011_add_voice_settings),
+            ("012_admin_features", self._migration_012_admin_features),
         ]
 
         # Run pending migrations
@@ -422,6 +424,167 @@ class DatabaseService:
                     logger.info(f"Auto-migrated full_unlock for user {row['user_id']}")
             except Exception as e:
                 logger.warning(f"Failed to check user {row['user_id']} for full_unlock migration: {e}")
+
+    def _migration_011_add_voice_settings(self):
+        """Add voice settings columns to user_settings table.
+
+        Adds columns for voice feature configuration:
+        - voice_mode: disabled, transcribe_only, tts_only, conversation
+        - tts_voice: voice preset name
+        - tts_speed: playback speed multiplier
+        - auto_play: whether to auto-play TTS responses
+        - stt_language: language code for speech-to-text
+        """
+        self.execute("""
+            ALTER TABLE user_settings
+            ADD COLUMN voice_mode TEXT DEFAULT 'disabled'
+        """)
+        self.execute("""
+            ALTER TABLE user_settings
+            ADD COLUMN tts_voice TEXT DEFAULT 'default'
+        """)
+        self.execute("""
+            ALTER TABLE user_settings
+            ADD COLUMN tts_speed REAL DEFAULT 1.0
+        """)
+        self.execute("""
+            ALTER TABLE user_settings
+            ADD COLUMN auto_play INTEGER DEFAULT 0
+        """)
+        self.execute("""
+            ALTER TABLE user_settings
+            ADD COLUMN stt_language TEXT DEFAULT 'en'
+        """)
+
+    def _migration_012_admin_features(self):
+        """Add admin features: user management, feature flags, themes, and audit logging.
+
+        This migration adds:
+        - is_admin, is_active, mode_restriction columns to users table
+        - feature_flags table for global feature definitions
+        - user_feature_overrides table for per-user feature toggles
+        - admin_audit_log table for admin action tracking
+        - themes table for custom UI themes
+        """
+        # Add admin columns to users table
+        self.execute("""
+            ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0
+        """)
+        self.execute("""
+            ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1
+        """)
+        self.execute("""
+            ALTER TABLE users ADD COLUMN mode_restriction TEXT DEFAULT NULL
+        """)
+
+        # Create feature_flags table
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS feature_flags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feature_key TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                description TEXT,
+                default_enabled INTEGER DEFAULT 1,
+                category TEXT DEFAULT 'general',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Create user_feature_overrides table
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS user_feature_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                feature_key TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                created_by INTEGER,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, feature_key)
+            )
+        """)
+
+        # Create admin_audit_log table
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id TEXT,
+                details TEXT,
+                ip_address TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (admin_id) REFERENCES users(id)
+            )
+        """)
+
+        # Create themes table
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS themes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                description TEXT,
+                css_variables TEXT NOT NULL,
+                is_system INTEGER DEFAULT 0,
+                is_enabled INTEGER DEFAULT 1,
+                created_by INTEGER,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES users(id)
+            )
+        """)
+
+        # Insert default feature flags
+        default_features = [
+            ('tool_use', 'Tool Use', 'Allow model to use tools', 1, 'tools'),
+            ('web_search', 'Web Search', 'Allow web search tool', 1, 'tools'),
+            ('browse_website', 'URL Browsing', 'Allow URL fetching tool', 1, 'tools'),
+            ('image_generation', 'Image Generation', 'Allow image generation', 1, 'tools'),
+            ('video_generation', 'Video Generation', 'Allow video generation', 1, 'tools'),
+            ('memory_system', 'Memory System', 'Enable persistent memory', 1, 'memory'),
+            ('knowledge_base', 'Knowledge Base', 'Enable knowledge base', 1, 'memory'),
+            ('tts', 'Text-to-Speech', 'Enable TTS for responses', 1, 'voice'),
+            ('stt', 'Speech-to-Text', 'Enable voice input', 1, 'voice'),
+            ('thinking_mode', 'Thinking Mode', 'Show model reasoning', 1, 'display'),
+            ('mcp_tools', 'MCP Tools', 'Enable MCP server tools', 1, 'tools'),
+        ]
+        for feature in default_features:
+            self.execute("""
+                INSERT OR IGNORE INTO feature_flags
+                (feature_key, display_name, description, default_enabled, category)
+                VALUES (?, ?, ?, ?, ?)
+            """, feature)
+
+        # Insert default themes
+        import json
+        default_themes = [
+            ('dark', 'Default Dark', 'Classic dark theme',
+             json.dumps({"--bg-primary": "#0f172a", "--bg-surface": "#1e293b",
+                        "--text-primary": "#ffffff", "--text-secondary": "#94a3b8",
+                        "--accent": "#144bb8", "--border": "#334155"}), 1),
+            ('midnight', 'Midnight Blue', 'Deep blue tones',
+             json.dumps({"--bg-primary": "#0d1117", "--bg-surface": "#161b22",
+                        "--text-primary": "#c9d1d9", "--text-secondary": "#8b949e",
+                        "--accent": "#58a6ff", "--border": "#30363d"}), 1),
+            ('forest', 'Forest Green', 'Natural green palette',
+             json.dumps({"--bg-primary": "#0f1a0f", "--bg-surface": "#1a2f1a",
+                        "--text-primary": "#e8f5e9", "--text-secondary": "#a5d6a7",
+                        "--accent": "#4caf50", "--border": "#2e5030"}), 1),
+        ]
+        for theme in default_themes:
+            self.execute("""
+                INSERT OR IGNORE INTO themes
+                (name, display_name, description, css_variables, is_system)
+                VALUES (?, ?, ?, ?, ?)
+            """, theme)
+
+        # Create indexes for performance
+        self.execute("CREATE INDEX IF NOT EXISTS idx_feature_overrides_user ON user_feature_overrides(user_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_admin ON admin_audit_log(admin_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_created ON admin_audit_log(created_at)")
 
     def close(self):
         """Close the database connection"""

@@ -97,9 +97,19 @@ CHAT_REQUEST_TIMEOUT = int(os.getenv("CHAT_REQUEST_TIMEOUT", "300"))  # 5 minute
 # This model runs in background after responses to extract memories and profile updates
 EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "qwen2.5-coder:3b")
 
+# Voice Configuration
+VOICE_ENABLED = os.getenv("VOICE_ENABLED", "false").lower() == "true"
+TTS_MODEL = os.getenv("TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B")
+TTS_DEVICE = os.getenv("TTS_DEVICE", "cuda:1")
+STT_MODEL = os.getenv("STT_MODEL", "small")
+STT_DEVICE = os.getenv("STT_DEVICE", "cuda:1")
+VOICE_MAX_AUDIO_LENGTH = int(os.getenv("VOICE_MAX_AUDIO_LENGTH", "60"))  # seconds
+VOICE_MAX_TTS_LENGTH = int(os.getenv("VOICE_MAX_TTS_LENGTH", "5000"))  # characters
+
 # Feature availability flags (based on API key presence)
 WEB_SEARCH_AVAILABLE = bool(BRAVE_SEARCH_API_KEY)
 VIDEO_GENERATION_AVAILABLE = bool(HF_TOKEN)
+VOICE_AVAILABLE = VOICE_ENABLED  # Voice requires explicit enablement
 
 class AppSettings(BaseModel):
     persona: Optional[str] = None

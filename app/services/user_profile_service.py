@@ -87,6 +87,13 @@ class UserProfileService:
     # Passcode loaded from environment variable for security
     ADULT_PASSCODE = config.ADULT_PASSCODE
 
+    # Mode restriction values:
+    # - None: no restriction
+    # - "normal_only": cannot enable adult mode at all
+    # - "no_full_unlock": can enable adult mode but cannot full unlock
+    MODE_RESTRICTION_NORMAL_ONLY = "normal_only"
+    MODE_RESTRICTION_NO_FULL_UNLOCK = "no_full_unlock"
+
     # Sensitive sections requiring explicit enablement
     SENSITIVE_SECTIONS = [
         "sexual_romantic",
@@ -121,6 +128,25 @@ class UserProfileService:
 
     def __init__(self):
         self.store = get_user_profile_store()
+        # Import db lazily to avoid circular imports
+        self._db = None
+
+    def _get_db(self):
+        """Lazy database access."""
+        if self._db is None:
+            from app.services.database import get_database
+            self._db = get_database()
+        return self._db
+
+    def _get_mode_restriction(self, user_id: int) -> Optional[str]:
+        """Get mode restriction for a user.
+
+        Returns:
+            None if no restriction, or restriction type string
+        """
+        db = self._get_db()
+        row = db.fetchone("SELECT mode_restriction FROM users WHERE id = ?", (user_id,))
+        return row["mode_restriction"] if row else None
 
     # CRUD Operations
 
@@ -502,7 +528,17 @@ class UserProfileService:
         Rate-limited to prevent brute-force attacks.
         After 5 failed attempts, user is locked out for 5 minutes.
         """
-        # Check rate limiting first
+        # Check mode restriction first
+        restriction = self._get_mode_restriction(user_id)
+        if restriction == self.MODE_RESTRICTION_NORMAL_ONLY:
+            logger.warning(f"User {user_id} attempted adult mode with normal_only restriction")
+            return {
+                "success": False,
+                "error": "Adult mode is not available for this account",
+                "restricted": True
+            }
+
+        # Check rate limiting
         if _passcode_rate_limiter.is_locked_out(user_id):
             remaining = _passcode_rate_limiter.get_lockout_remaining(user_id)
             logger.warning(f"Rate-limited passcode attempt for user {user_id} ({remaining}s remaining)")
@@ -607,6 +643,7 @@ class UserProfileService:
 
         Requires:
         - adult_mode_enabled = True (Tier 1, via passcode in Settings)
+        - No mode_restriction = "no_full_unlock" or "normal_only"
 
         Args:
             user_id: The user's ID
@@ -619,8 +656,18 @@ class UserProfileService:
         if not session_id:
             return {"success": False, "error": "Session ID required"}
 
-        # Check Tier 1 (uncensored mode) is enabled first (only for enabling adult mode)
+        # Check mode restriction for enabling (not for disabling)
         if enabled:
+            restriction = self._get_mode_restriction(user_id)
+            if restriction in (self.MODE_RESTRICTION_NORMAL_ONLY, self.MODE_RESTRICTION_NO_FULL_UNLOCK):
+                logger.warning(f"User {user_id} attempted full unlock with {restriction} restriction")
+                return {
+                    "success": False,
+                    "error": "Full unlock is not available for this account",
+                    "restricted": True
+                }
+
+            # Check Tier 1 (uncensored mode) is enabled first
             adult_status = self.store.get_adult_mode_status(user_id)
             if not adult_status.get("enabled"):
                 return {
