@@ -988,6 +988,29 @@ export class ChatManager {
         };
 
         actions.appendChild(copyBtn);
+
+        // Speaker button for TTS (streamed messages)
+        const speakBtn = document.createElement('button');
+        speakBtn.className = 'p-1.5 text-gray-500 hover:text-white hover:bg-white/10 rounded-lg transition-all speak-btn';
+        speakBtn.title = 'Read aloud';
+        speakBtn.innerHTML = '<span class="material-symbols-outlined text-sm">volume_up</span>';
+        speakBtn.onclick = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const textToSpeak = contentEl.textContent || '';
+            if (chatManager.app.voiceManager) {
+                speakBtn.innerHTML = '<span class="material-symbols-outlined text-sm animate-pulse">volume_up</span>';
+                speakBtn.classList.add('text-primary');
+                try {
+                    await chatManager.app.voiceManager.speakText(textToSpeak, true);
+                } finally {
+                    speakBtn.innerHTML = '<span class="material-symbols-outlined text-sm">volume_up</span>';
+                    speakBtn.classList.remove('text-primary');
+                }
+            }
+        };
+        actions.appendChild(speakBtn);
+
         actions.appendChild(regenBtn);
         this.currentAssistantMessage.bubbleContainer.appendChild(actions);
     }

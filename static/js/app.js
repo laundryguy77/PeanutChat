@@ -1,5 +1,5 @@
 // Main Application Controller
-import { ChatManager } from './chat.js?v=3';
+import { ChatManager } from './chat.js?v=4';
 import { SettingsManager } from './settings.js?v=3';
 import { initVoiceManager, voiceManager } from './voice.js?v=3';
 
