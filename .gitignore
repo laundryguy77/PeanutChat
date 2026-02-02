@@ -31,3 +31,8 @@ conversations/
 .DS_Store
 Thumbs.db
 tests/ui_testing/old_findings/
+
+# Runtime artifacts
+*.db
+*.log
+auto_merge.log
