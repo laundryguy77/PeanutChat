@@ -2,7 +2,6 @@
 class ProfileManager {
     constructor() {
         this.profile = null;
-        this.adultMode = false;
         this.initialized = false;
         this.isDirty = false;  // Track unsaved changes
         this.saveTimeout = null;  // Debounce timer for auto-save
@@ -22,11 +21,10 @@ class ProfileManager {
             return;
         }
 
-        // Only load profile once per session to preserve adultMode state
-        // Profile changes (like unlocking adult mode) update state directly
+        // Only load profile once per session
         if (this.initialized && this.profile) {
             // Just re-render with cached data
-            console.log('[Profile] Using cached profile (adultMode:', this.adultMode, ')');
+            console.log('[Profile] Using cached profile');
             this.render();
             return;
         }
@@ -34,7 +32,7 @@ class ProfileManager {
         console.log('[Profile] Loading profile from server (first init)');
         await this.loadProfile();
         this.initialized = true;
-        console.log('[Profile] Profile loaded and cached (adultMode:', this.adultMode, ')');
+        console.log('[Profile] Profile loaded and cached');
     }
 
     async loadProfile() {
@@ -50,7 +48,6 @@ class ProfileManager {
                     relationship_metrics: {},
                     communication: {}
                 };
-                this.adultMode = data.adult_mode_enabled || false;
                 this.render();
             } else if (response.status === 401) {
                 // Not authenticated
@@ -158,24 +155,6 @@ class ProfileManager {
                         <span class="text-xs px-2 py-1 rounded-full ${this.getStageColor(metrics.relationship_stage)}">
                             ${this.capitalizeStage(metrics.relationship_stage || 'new')}
                         </span>
-                    </div>
-                </div>
-
-                <!-- Uncensored Mode -->
-                <div class="bg-background-dark rounded-xl p-4">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <h4 class="text-sm font-medium text-gray-300">Uncensored Mode</h4>
-                            <p class="text-xs text-gray-500 mt-0.5">
-                                ${this.adultMode ? 'Access to uncensored models' : 'Unlock to access uncensored models'}
-                            </p>
-                        </div>
-                        <button onclick="profileManager.toggleAdultMode()"
-                                class="p-2 rounded-lg ${this.adultMode ? 'bg-red-500/20 text-red-400' : 'bg-gray-700 text-gray-400'} hover:opacity-80 transition-all">
-                            <span class="material-symbols-outlined text-lg">
-                                ${this.adultMode ? 'lock_open' : 'lock'}
-                            </span>
-                        </button>
                     </div>
                 </div>
 
@@ -311,164 +290,6 @@ class ProfileManager {
 
     capitalizeStage(stage) {
         return stage.charAt(0).toUpperCase() + stage.slice(1);
-    }
-
-    // Uncensored Mode
-
-    async toggleAdultMode() {
-        if (this.adultMode) {
-            await this.disableAdultMode();
-        } else {
-            this.showAdultModal();
-        }
-    }
-
-    showAdultModal() {
-        const modal = document.getElementById('adult-mode-modal');
-        if (!modal) {
-            // Create modal if it doesn't exist
-            const modalHtml = `
-                <div id="adult-mode-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-                    <div class="bg-surface-dark border border-gray-700 rounded-2xl w-full max-w-sm shadow-2xl">
-                        <div class="flex items-center justify-between p-6 border-b border-gray-700">
-                            <div>
-                                <h2 class="font-display font-bold text-lg text-white">Unlock Uncensored Mode</h2>
-                                <p class="text-xs text-gray-500 mt-1">Enter the 4-digit passcode</p>
-                            </div>
-                            <button id="adult-modal-close" class="text-gray-400 hover:text-white transition-colors">
-                                <span class="material-symbols-outlined">close</span>
-                            </button>
-                        </div>
-                        <div class="p-6">
-                            <div id="adult-mode-error" class="hidden mb-4 p-3 bg-red-500/20 border border-red-500/50 rounded-lg text-red-400 text-sm"></div>
-                            <input type="password"
-                                   id="adult-passcode"
-                                   maxlength="4"
-                                   pattern="[0-9]*"
-                                   inputmode="numeric"
-                                   class="w-full bg-background-dark border border-gray-700 rounded-xl p-4 text-white text-center text-2xl tracking-widest focus:ring-2 focus:ring-primary/50 focus:border-primary/50"
-                                   placeholder="****">
-                        </div>
-                        <div class="flex gap-3 p-6 pt-0">
-                            <button onclick="profileManager.hideAdultModal()"
-                                    class="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors">
-                                Cancel
-                            </button>
-                            <button onclick="profileManager.submitPasscode()"
-                                    class="flex-1 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium transition-all">
-                                Unlock
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            `;
-            document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-            // Add close button handler
-            document.getElementById('adult-modal-close').addEventListener('click', () => {
-                this.hideAdultModal();
-            });
-
-            // Add enter key handler
-            document.getElementById('adult-passcode').addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    this.submitPasscode();
-                }
-            });
-
-            // Add ESC key handler
-            document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape') {
-                    const adultModal = document.getElementById('adult-mode-modal');
-                    if (adultModal && !adultModal.classList.contains('hidden')) {
-                        this.hideAdultModal();
-                    }
-                }
-            });
-
-            // Add click outside to close
-            document.getElementById('adult-mode-modal').addEventListener('click', (e) => {
-                if (e.target.id === 'adult-mode-modal') {
-                    this.hideAdultModal();
-                }
-            });
-        } else {
-            modal.classList.remove('hidden');
-        }
-        document.getElementById('adult-passcode').focus();
-    }
-
-    hideAdultModal() {
-        const modal = document.getElementById('adult-mode-modal');
-        if (modal) {
-            modal.classList.add('hidden');
-            document.getElementById('adult-passcode').value = '';
-            document.getElementById('adult-mode-error').classList.add('hidden');
-        }
-    }
-
-    async submitPasscode() {
-        const passcode = document.getElementById('adult-passcode').value;
-        const errorEl = document.getElementById('adult-mode-error');
-
-        try {
-            const response = await fetch('/api/profile/adult-mode/unlock', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                credentials: 'include',
-                body: JSON.stringify({ passcode })
-            });
-
-            if (response.ok) {
-                console.log('[Uncensored] Unlock successful, refreshing models...');
-                this.adultMode = true;
-                this.hideAdultModal();
-                this.render();
-                // Show toast to confirm unlock is saved immediately
-                this.showToast('Uncensored mode unlocked and saved!', 'success');
-                // Refresh models list to show uncensored models
-                console.log('[Uncensored] window.app exists:', !!window.app);
-                if (window.app) {
-                    console.log('[Uncensored] Calling window.app.loadModels()');
-                    await window.app.loadModels();
-                    console.log('[Uncensored] loadModels() completed');
-                }
-            } else {
-                const data = await response.json();
-                errorEl.textContent = data.detail || 'Invalid passcode';
-                errorEl.classList.remove('hidden');
-            }
-        } catch (error) {
-            console.error('Failed to unlock adult mode:', error);
-            errorEl.textContent = 'Failed to unlock. Please try again.';
-            errorEl.classList.remove('hidden');
-        }
-    }
-
-    async disableAdultMode() {
-        try {
-            const response = await fetch('/api/profile/adult-mode/disable', {
-                method: 'POST',
-                credentials: 'include'
-            });
-
-            if (response.ok) {
-                console.log('[Uncensored] Lock successful, refreshing models...');
-                this.adultMode = false;
-                this.render();
-                // Refresh models list
-                console.log('[Uncensored] window.app exists:', !!window.app);
-                if (window.app) {
-                    console.log('[Uncensored] Calling window.app.loadModels()');
-                    await window.app.loadModels();
-                    console.log('[Uncensored] loadModels() completed');
-                }
-            }
-        } catch (error) {
-            console.error('Failed to disable adult mode:', error);
-        }
     }
 
     // Profile Operations

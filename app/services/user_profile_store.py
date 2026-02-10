@@ -58,11 +58,7 @@ def get_default_profile_template() -> Dict[str, Any]:
             "assistant_personality_archetype": "competent_peer",
             "formality_level": "casual",
             "emotional_availability": "moderate",
-            "personality_notes": None,
-            # Avatar fields for consistent character in media generation
-            "avatar_image_path": None,     # Path to avatar file (e.g., "avatars/1.png")
-            "avatar_prompt": None,         # Prompt used to generate the avatar
-            "avatar_style_tags": None      # Style keywords for consistency in generated media
+            "personality_notes": None
         },
         "interaction": {
             "proactivity_level": "moderate",
@@ -131,88 +127,6 @@ def get_default_profile_template() -> Dict[str, Any]:
             "total_sessions": 0,
             "average_session_length_messages": 0
         },
-        "sexual_romantic": {
-            "enabled": False,
-            "orientation": None,
-            "relationship_status": None,
-            "partner_awareness": None,
-            "ai_interaction_interest": None,
-            "gender_attraction": {
-                "attracted_to": [],
-                "presentation_preferences": None
-            },
-            "romantic_rp_interest": False,
-            "erotic_rp_interest": False,
-            "kink_profile": {
-                "enabled": False
-            },
-            "fantasy_scenarios": [],
-            "explicit_content_formatting": "fade_to_black",
-            "consent_dynamics": "always_explicit",
-            "safe_word": None
-        },
-        "substances_health": {
-            "enabled": False,
-            "substance_use": {
-                "alcohol": None,
-                "cannabis": None,
-                "tobacco": None,
-                "caffeine": None,
-                "psychedelics": None,
-                "prescription_recreational": None,
-                "other": [],
-                "in_recovery": False,
-                "recovery_substances": [],
-                "harm_reduction_interest": False,
-                "sobriety_support_needed": False
-            },
-            "health_conditions": [],
-            "mental_health": {
-                "disclosed_conditions": [],
-                "therapy_status": None,
-                "medication_comfort_discussing": False,
-                "crisis_protocol": "standard"
-            },
-            "medications": {
-                "current": [],
-                "notes": None,
-                "interaction_warnings_wanted": True
-            },
-            "disability_context": {
-                "disclosed": [],
-                "accommodation_notes": None
-            },
-            "lecture_tolerance": "brief_when_relevant"
-        },
-        "dark_content": {
-            "enabled": False,
-            "violence_tolerance": "minimal",
-            "dark_humor_tolerance": "minimal",
-            "horror_tolerance": "minimal",
-            "tragedy_tolerance": "minimal",
-            "moral_ambiguity_tolerance": "minimal",
-            "existential_dread_tolerance": "minimal",
-            "graphic_description_tolerance": "minimal",
-            "real_world_dark_topics": "avoid",
-            "fiction_vs_reality_distinction": "clear"
-        },
-        "private_self": {
-            "enabled": False,
-            "secrets_shared": [],
-            "shame_triggers": {},
-            "insecurities": [],
-            "aspirational_self": None,
-            "actual_self_honest": None,
-            "model_approach_to_gap": "encourage_without_judgment",
-            "past_traumas_disclosed": [],
-            "trauma_approach": "avoid_unless_initiated",
-            "coping_mechanisms": [],
-            "attachment_style": None,
-            "love_languages": [],
-            "conflict_style": None,
-            "stress_indicators": [],
-            "comfort_requests": []
-        },
         "goals_aspirations": {
             "short_term": [],
             "long_term": [],
@@ -251,14 +165,6 @@ def get_default_profile_template() -> Dict[str, Any]:
                 "work_life_separation": "moderate"
             }
         },
-        "financial_context": {
-            "enabled": False,
-            "comfort_level": "undisclosed",
-            "stress_level": "undisclosed",
-            "goals": [],
-            "constraints": [],
-            "discussion_comfort": False
-        },
         "learning_context": {
             "learning_style": None,
             "attention_span": None,
@@ -281,7 +187,7 @@ def get_default_profile_template() -> Dict[str, Any]:
             },
             "visibility_tiers": {
                 "public": ["preferred_name", "city", "os_preference", "conversation_style"],
-                "model_only": ["private_self", "shame_triggers", "health_conditions"],
+                "model_only": [],
                 "exportable": ["identity", "communication", "preferences", "persona_preferences", "interaction", "technical"]
             },
             "encryption_enabled": False,
@@ -306,10 +212,6 @@ class UserProfile:
     """User profile data structure."""
     user_id: int
     profile_data: Dict[str, Any]
-    adult_mode_enabled: bool
-    adult_mode_unlocked_at: Optional[str]
-    full_unlock_enabled: bool
-    full_unlock_at: Optional[str]
     created_at: str
     updated_at: str
 
@@ -322,10 +224,6 @@ class UserProfileStore:
 
     def __init__(self):
         self.db = get_database()
-        # In-memory session unlock tracking
-        # Key: (user_id, session_id) -> bool
-        # Sessions start locked by default (critical child safety requirement)
-        self._session_unlocks: Dict[tuple, bool] = {}
 
     def get_profile(self, user_id: int) -> Optional[UserProfile]:
         """Get a user's profile, creating default if doesn't exist."""
@@ -340,10 +238,6 @@ class UserProfileStore:
         return UserProfile(
             user_id=row["user_id"],
             profile_data=json.loads(row["profile_data"]),
-            adult_mode_enabled=bool(row["adult_mode_enabled"]),
-            adult_mode_unlocked_at=row["adult_mode_unlocked_at"],
-            full_unlock_enabled=bool(row["full_unlock_enabled"]) if row["full_unlock_enabled"] is not None else False,
-            full_unlock_at=row["full_unlock_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"]
         )
@@ -358,8 +252,8 @@ class UserProfileStore:
 
         self.db.execute(
             """INSERT INTO user_profiles
-               (user_id, profile_data, adult_mode_enabled, created_at, updated_at)
-               VALUES (?, ?, 0, ?, ?)""",
+               (user_id, profile_data, created_at, updated_at)
+               VALUES (?, ?, ?, ?)""",
             (user_id, json.dumps(profile_data), now, now)
         )
 
@@ -368,10 +262,6 @@ class UserProfileStore:
         return UserProfile(
             user_id=user_id,
             profile_data=profile_data,
-            adult_mode_enabled=False,
-            adult_mode_unlocked_at=None,
-            full_unlock_enabled=False,
-            full_unlock_at=None,
             created_at=now,
             updated_at=now
         )
@@ -521,22 +411,6 @@ class UserProfileStore:
                     continue
                 raise
 
-    def set_adult_mode(self, user_id: int, enabled: bool) -> Optional[UserProfile]:
-        """Enable or disable adult mode."""
-        now = datetime.utcnow().isoformat() + "Z" if enabled else None
-
-        self.db.execute(
-            """UPDATE user_profiles
-               SET adult_mode_enabled = ?,
-                   adult_mode_unlocked_at = ?,
-                   updated_at = ?
-               WHERE user_id = ?""",
-            (1 if enabled else 0, now, datetime.utcnow().isoformat() + "Z", user_id)
-        )
-
-        logger.info(f"Adult mode {'enabled' if enabled else 'disabled'} for user {user_id}")
-        return self.get_profile(user_id)
-
     def delete_profile(self, user_id: int) -> bool:
         """Delete a user's profile."""
         cursor = self.db.execute(
@@ -547,139 +421,6 @@ class UserProfileStore:
         if deleted:
             logger.info(f"Deleted profile for user {user_id}")
         return deleted
-
-    def get_adult_mode_status(self, user_id: int) -> Dict[str, Any]:
-        """Get just the adult mode status."""
-        row = self.db.fetchone(
-            "SELECT adult_mode_enabled, adult_mode_unlocked_at FROM user_profiles WHERE user_id = ?",
-            (user_id,)
-        )
-
-        if not row:
-            return {"enabled": False, "unlocked_at": None}
-
-        return {
-            "enabled": bool(row["adult_mode_enabled"]),
-            "unlocked_at": row["adult_mode_unlocked_at"]
-        }
-
-    def set_full_unlock(self, user_id: int, enabled: bool) -> Optional[UserProfile]:
-        """Enable or disable full unlock (Tier 2 adult content gate).
-
-        This should only be called AFTER adult_mode_enabled is True (via Settings).
-        """
-        now = datetime.utcnow().isoformat() + "Z" if enabled else None
-
-        self.db.execute(
-            """UPDATE user_profiles
-               SET full_unlock_enabled = ?,
-                   full_unlock_at = ?,
-                   updated_at = ?
-               WHERE user_id = ?""",
-            (1 if enabled else 0, now, datetime.utcnow().isoformat() + "Z", user_id)
-        )
-
-        logger.info(f"Full unlock {'enabled' if enabled else 'disabled'} for user {user_id}")
-        return self.get_profile(user_id)
-
-    def get_full_unlock_status(self, user_id: int) -> Dict[str, Any]:
-        """Get full unlock status (Tier 2 adult content gate).
-
-        NOTE: This returns the persistent database status.
-        For runtime session-scoped unlock, use get_session_unlock_status().
-        """
-        row = self.db.fetchone(
-            "SELECT full_unlock_enabled, full_unlock_at FROM user_profiles WHERE user_id = ?",
-            (user_id,)
-        )
-
-        if not row:
-            return {"enabled": False, "unlocked_at": None}
-
-        return {
-            "enabled": bool(row["full_unlock_enabled"]) if row["full_unlock_enabled"] is not None else False,
-            "unlocked_at": row["full_unlock_at"]
-        }
-
-    # Session-scoped unlock methods (CRITICAL for child safety)
-    #
-    # ARCHITECTURE NOTE: Dual Persistence Design
-    # ==========================================
-    # There are TWO places where full_unlock state is stored:
-    #
-    # 1. DATABASE (full_unlock_enabled column):
-    #    - Persists across server restarts and sessions
-    #    - Used for: Analytics, historical tracking, backward compatibility
-    #    - NOT the primary gate for adult content access
-    #    - Set via set_full_unlock() when user runs /full_unlock enable
-    #
-    # 2. IN-MEMORY (self._session_unlocks dict):
-    #    - Per-session, lost on server restart or tab close
-    #    - This IS the primary gate for adult content access
-    #    - New sessions start LOCKED by default (child safety requirement)
-    #    - User must explicitly run /full_unlock enable each session
-    #
-    # The chat endpoint (routers/chat.py) checks BOTH:
-    #   - adult_mode_enabled (Tier 1, database, via passcode in Settings)
-    #   - session_unlock (Tier 2, in-memory, via /full_unlock command)
-    #
-    # Only when BOTH are True does the user have access to adult content.
-    # This ensures that even if someone finds a device with adult mode enabled,
-    # they cannot access adult content without running the command.
-
-    def set_session_unlock(self, user_id: int, session_id: str, enabled: bool) -> None:
-        """Set unlock status for a specific session.
-
-        Sessions start LOCKED by default. This is a critical child safety requirement.
-        The user must explicitly run /full_unlock enable in each new session.
-
-        Args:
-            user_id: The user's ID
-            session_id: The browser session ID (from X-Session-ID header)
-            enabled: Whether to enable or disable adult content for this session
-        """
-        key = (user_id, session_id)
-        if enabled:
-            self._session_unlocks[key] = True
-            logger.info(f"Session unlock ENABLED for user {user_id}, session {session_id[:8]}...")
-        else:
-            # Remove the key to disable (default is locked)
-            self._session_unlocks.pop(key, None)
-            logger.info(f"Session unlock DISABLED for user {user_id}, session {session_id[:8]}...")
-
-    def get_session_unlock_status(self, user_id: int, session_id: str) -> Dict[str, Any]:
-        """Check if current session has unlock enabled.
-
-        Returns False (locked) for:
-        - New sessions that haven't called /full_unlock enable
-        - Sessions where the user called /full_unlock disable
-        - Missing or invalid session IDs
-
-        Args:
-            user_id: The user's ID
-            session_id: The browser session ID (from X-Session-ID header)
-
-        Returns:
-            Dict with 'enabled' boolean
-        """
-        if not session_id:
-            return {"enabled": False}
-
-        key = (user_id, session_id)
-        enabled = self._session_unlocks.get(key, False)
-        return {"enabled": enabled}
-
-    def clear_user_sessions(self, user_id: int) -> int:
-        """Clear all session unlocks for a user (e.g., on logout).
-
-        Returns the number of sessions cleared.
-        """
-        keys_to_remove = [k for k in self._session_unlocks if k[0] == user_id]
-        for key in keys_to_remove:
-            del self._session_unlocks[key]
-        if keys_to_remove:
-            logger.info(f"Cleared {len(keys_to_remove)} session unlock(s) for user {user_id}")
-        return len(keys_to_remove)
 
 
 # Global instance

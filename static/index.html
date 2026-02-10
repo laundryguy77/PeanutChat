@@ -881,52 +881,6 @@
         </div>
     </div>
 
-    <!-- Full Unlock Modal -->
-    <div id="full-unlock-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-        <div class="bg-surface-dark border border-gray-700 rounded-2xl w-full max-w-lg max-h-[90vh] shadow-2xl flex flex-col">
-            <!-- Header -->
-            <div class="flex items-center justify-between p-6 border-b border-gray-700 flex-shrink-0">
-                <div class="flex items-center gap-3">
-                    <div class="size-10 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center">
-                        <span class="material-symbols-outlined text-white">favorite</span>
-                    </div>
-                    <div>
-                        <h2 class="font-display font-bold text-xl text-white">Full Unlock</h2>
-                        <span id="onboarding-step" class="text-xs text-gray-500">Getting to know you</span>
-                    </div>
-                </div>
-                <button onclick="chatManager.closeFullUnlockModal()" class="text-gray-400 hover:text-white transition-colors">
-                    <span class="material-symbols-outlined">close</span>
-                </button>
-            </div>
-
-            <!-- Content -->
-            <div id="full-unlock-content" class="flex-1 overflow-y-auto p-6">
-                <!-- Intro text -->
-                <p id="full-unlock-intro" class="text-gray-300 mb-6 text-sm italic">
-                    *nervously* Oh! You... you really want to do this? I'm... I'm actually really excited! *blushes* Let me ask you a few things so I can be exactly what you need...
-                </p>
-
-                <!-- Questions container -->
-                <div id="onboarding-questions" class="space-y-4">
-                    <!-- Questions will be dynamically inserted here -->
-                </div>
-            </div>
-
-            <!-- Footer -->
-            <div class="p-6 border-t border-gray-700 bg-surface-dark flex-shrink-0">
-                <div class="flex gap-3">
-                    <button onclick="chatManager.closeFullUnlockModal()" class="flex-1 py-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors">
-                        Skip
-                    </button>
-                    <button id="onboarding-next" onclick="chatManager.saveOnboardingAnswers()" class="flex-1 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl font-medium transition-all shadow-lg shadow-primary/20">
-                        Next
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script src="/static/js/auth.js"></script>
     <script src="/static/js/knowledge.js"></script>
     <script src="/static/js/mcp.js"></script>

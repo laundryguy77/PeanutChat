@@ -113,41 +113,35 @@ Model Response → Extract Memories (Auto) → Store with Embeddings
 
 ### Profile System
 
-User profiles store persistent preferences and personal information.
+User profiles are stored as markdown files with YAML frontmatter.
+
+**Storage:** `data/profiles/{user_id}.md`
+
+**Format:**
+```markdown
+---
+name: John
+timezone: America/New_York
+assistant_name: Peanut
+communication_style: casual
+response_length: adaptive
+pronouns: he/him
+---
+
+# Notes
+
+Free-form user notes...
+```
 
 **Files:**
-- `app/services/user_profile_service.py` - Business logic + mode security
-- `app/services/user_profile_store.py` - Database persistence
-- `app/services/profile_extractor.py` - Auto-extraction from responses
+- `app/services/profile_markdown_service.py` - Markdown file I/O
+- `app/services/user_profile_service.py` - Business logic wrapper
 - `app/routers/user_profile.py` - REST API endpoints
 
 **Features:**
-- Auto-save with 2-second debounce
-- Profile sections: identity, communication, technical, persona_preferences, etc.
-- Auto-extraction via `[PROFILE]` tags for non-tool models
-
----
-
-### Three-Tier Mode System
-
-Content gating with session-scoped unlocks for safety.
-
-**Tiers:**
-1. **Normal Mode** - Default, SFW content only
-2. **Uncensored Mode** (Tier 1) - Requires passcode, persists to database
-3. **Full Unlock Mode** (Tier 2) - Requires `/full_unlock` command, session-only
-
-**Security Features:**
-- Rate limiting: 5 attempts per 5 minutes (PasscodeRateLimiter)
-- Session-scoped unlocks (in-memory, cleared on restart)
-- X-Session-ID validation for gated endpoints
-- Automatic cleanup on mode disable
-
-**Files:**
-- `app/services/user_profile_service.py` - Mode logic + rate limiter
-- `app/services/user_profile_store.py` - Persistence + session tracking
-- `app/routers/user_profile.py` - API endpoints
-- `app/routers/commands.py` - Avatar endpoints with session gating
+- Simple flat structure (no complex nested sections)
+- Auto-save with 2-second debounce in UI
+- Backwards-compatible API that maps to old nested format
 
 ---
 
@@ -223,7 +217,6 @@ Key environment variables in `.env`:
 
 ```bash
 # Required
-ADULT_PASSCODE=         # Passcode for uncensored mode
 JWT_SECRET=             # JWT signing secret
 
 # Optional - General

@@ -79,10 +79,7 @@ TRUSTED_PROXIES = [p.strip() for p in os.getenv("TRUSTED_PROXIES", "").split(","
 
 # Hugging Face settings (for video generation)
 HF_TOKEN = os.getenv("HF_TOKEN", "")
-VIDEO_GENERATION_SPACE = os.getenv("VIDEO_GENERATION_SPACE", "Heartsync/NSFW-Uncensored-video")
-
-# Adult content passcode (MUST be set in environment for security)
-ADULT_PASSCODE = os.getenv("ADULT_PASSCODE", "")
+VIDEO_GENERATION_SPACE = os.getenv("VIDEO_GENERATION_SPACE", "")
 
 # Chat streaming limits
 # Soft limits: Log warning but continue streaming (model may need extended thinking for complex problems)

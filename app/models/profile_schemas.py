@@ -17,27 +17,13 @@ class ProfileSection(str, Enum):
     BOUNDARIES = "boundaries"
     VALUES_BELIEFS = "values_beliefs"
     RELATIONSHIP_METRICS = "relationship_metrics"
-    SEXUAL_ROMANTIC = "sexual_romantic"
-    SUBSTANCES_HEALTH = "substances_health"
-    DARK_CONTENT = "dark_content"
-    PRIVATE_SELF = "private_self"
     GOALS_ASPIRATIONS = "goals_aspirations"
     SOCIAL_CONTEXT = "social_context"
     WORK_CONTEXT = "work_context"
-    FINANCIAL_CONTEXT = "financial_context"
     LEARNING_CONTEXT = "learning_context"
     META_SYSTEM = "meta_system"
     INTERACTION_LOG = "interaction_log"
     CUSTOM_FIELDS = "custom_fields"
-
-
-class SensitiveSection(str, Enum):
-    """Sections requiring explicit enablement."""
-    SEXUAL_ROMANTIC = "sexual_romantic"
-    SUBSTANCES_HEALTH = "substances_health"
-    DARK_CONTENT = "dark_content"
-    PRIVATE_SELF = "private_self"
-    FINANCIAL_CONTEXT = "financial_context"
 
 
 class UpdateOperation(str, Enum):
@@ -142,13 +128,6 @@ class LogEventRequest(BaseModel):
     severity: EventSeverity = Field(default=EventSeverity.MODERATE)
 
 
-class EnableSectionRequest(BaseModel):
-    """Request to enable/disable a section."""
-    section: SensitiveSection
-    enabled: bool
-    user_confirmed: bool = Field(..., description="Must be true to proceed")
-
-
 class AddNestedRequest(BaseModel):
     """Request to add to nested object."""
     section: str
@@ -177,30 +156,11 @@ class ProfileResetRequest(BaseModel):
     confirmation_phrase: str
 
 
-class AdultModeUnlockRequest(BaseModel):
-    """Request to unlock adult mode."""
-    passcode: str
-
-
-class OnboardingAnswerRequest(BaseModel):
-    """Request to submit onboarding answer."""
-    section: str
-    question_id: str
-    answer: Any
-
-
 # Response schemas
 
 class ProfileResponse(BaseModel):
     """Profile data response."""
     profile: Dict[str, Any]
-    adult_mode_enabled: bool
-
-
-class AdultModeStatusResponse(BaseModel):
-    """Adult mode status response."""
-    enabled: bool
-    unlocked_at: Optional[str] = None
 
 
 class EventLogResponse(BaseModel):

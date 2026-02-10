@@ -1,10 +1,9 @@
 """Centralized system prompt construction with memory, profile, and tool instructions."""
 import re
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 
 
 # Define profile field metadata for intelligent extraction
-# "default" marks values that are system defaults (not user-set) and should be treated as unanswered
 PROFILE_FIELD_METADATA = {
     # Identity fields (always included when populated)
     "identity": {
@@ -47,34 +46,17 @@ PROFILE_FIELD_METADATA = {
         "industry": {"label": "Industry", "question": "What industry do you work in?"},
         "role": {"label": "Role", "question": "What's your job role?"},
     },
-    # Adult sections (only when full_unlock enabled)
-    "sexual_romantic": {
-        "orientation": {"label": "Orientation", "question": "What's your orientation?", "adult": True},
-        "ai_interaction_interest": {"label": "AI interaction interest", "question": "What level of romantic/intimate interaction are you interested in?", "adult": True},
-        "explicit_content_formatting": {"label": "Explicit level", "question": "How explicit would you like intimate content to be?", "adult": True, "default": "fade_to_black"},
-        "fantasy_scenarios": {"label": "Fantasy scenarios", "question": "Any particular fantasies or scenarios you'd like to explore?", "adult": True},
-    },
-    "dark_content": {
-        "violence_tolerance": {"label": "Violence tolerance", "question": "What's your tolerance for violent content in fiction?", "adult": True, "default": "minimal"},
-        "dark_humor_tolerance": {"label": "Dark humor", "question": "How do you feel about dark humor?", "adult": True, "default": "minimal"},
-    },
-    "private_self": {
-        "attachment_style": {"label": "Attachment style", "question": "How would you describe your attachment style in relationships?", "adult": True},
-        "coping_mechanisms": {"label": "Coping mechanisms", "question": "What coping mechanisms do you use when stressed?", "adult": True},
-    },
 }
 
 
 def get_unanswered_profile_fields(
     profile: Dict[str, Any],
-    full_unlock_enabled: bool = False,
     max_fields: int = 5
 ) -> List[Dict[str, str]]:
     """Get a list of unanswered profile fields for the model to naturally ask about.
 
     Args:
         profile: The user's profile data
-        full_unlock_enabled: Whether adult sections are unlocked
         max_fields: Maximum number of unanswered fields to return
 
     Returns:
@@ -82,18 +64,10 @@ def get_unanswered_profile_fields(
     """
     unanswered = []
 
-    # Priority order: adult sections first if unlocked, then core sections
-    if full_unlock_enabled:
-        section_priority = [
-            "sexual_romantic", "dark_content", "private_self",  # Adult first
-            "identity", "communication", "persona_preferences",
-            "boundaries", "pet_peeves", "technical", "work_context"
-        ]
-    else:
-        section_priority = [
-            "identity", "communication", "persona_preferences",
-            "boundaries", "pet_peeves", "technical", "work_context"
-        ]
+    section_priority = [
+        "identity", "communication", "persona_preferences",
+        "boundaries", "pet_peeves", "technical", "work_context"
+    ]
 
     for section in section_priority:
         if section not in PROFILE_FIELD_METADATA:
@@ -101,11 +75,7 @@ def get_unanswered_profile_fields(
 
         section_data = profile.get(section, {})
 
-        # Skip adult sections if not unlocked
         for field, meta in PROFILE_FIELD_METADATA[section].items():
-            if meta.get("adult") and not full_unlock_enabled:
-                continue
-
             # Check if field is unanswered (including default values)
             value = section_data.get(field)
             default_value = meta.get("default")
@@ -122,8 +92,7 @@ def get_unanswered_profile_fields(
                 unanswered.append({
                     "section": section,
                     "field": field,
-                    "question": meta["question"],
-                    "is_adult": meta.get("adult", False)
+                    "question": meta["question"]
                 })
 
                 if len(unanswered) >= max_fields:
@@ -303,8 +272,7 @@ Note: Profile data is already loaded - you don't need to read it with tools.
         profile_context: Optional[Dict[str, Any]] = None,
         user_name: Optional[str] = None,
         has_tools: bool = True,
-        has_vision: bool = False,
-        full_unlock_enabled: bool = False
+        has_vision: bool = False
     ) -> str:
         """Build the complete system prompt.
 
@@ -315,7 +283,6 @@ Note: Profile data is already loaded - you don't need to read it with tools.
             user_name: User's name from memory
             has_tools: Whether the model supports tools
             has_vision: Whether the model supports vision
-            full_unlock_enabled: Whether adult content sections are unlocked
         """
         sections = []
 
@@ -339,7 +306,7 @@ Note: Profile data is already loaded - you don't need to read it with tools.
 
         # Profile context - add before memory for priority
         if profile_context:
-            profile_str = self._format_profile_context(profile_context, full_unlock_enabled)
+            profile_str = self._format_profile_context(profile_context)
             sections.append(profile_str)
 
         # Memory context
@@ -377,20 +344,12 @@ Use this information to personalize your responses. Don't explicitly mention "ac
 
         return "\n".join(sections)
 
-    def _format_profile_context(
-        self,
-        profile: Dict[str, Any],
-        full_unlock_enabled: bool = False
-    ) -> str:
+    def _format_profile_context(self, profile: Dict[str, Any]) -> str:
         """Format profile data for inclusion in system prompt.
 
         Only includes fields that have actual values (not null/empty).
         Adds a list of unanswered areas for the model to naturally explore.
         All user-provided data is sanitized to prevent prompt injection.
-
-        Args:
-            profile: The user's profile data
-            full_unlock_enabled: Whether adult sections are accessible
         """
         lines = ["\n## USER PROFILE CONTEXT\n"]
         lines.append("*Only populated profile areas are shown below.*\n")
@@ -485,119 +444,13 @@ Use this information to personalize your responses. Don't explicitly mention "ac
 
             # Behavioral adjustments based on metrics
             if satisfaction < 30:
-                lines.append("  ⚠️ LOW SATISFACTION: Be extra careful. Review pet peeves. Focus on competence.")
+                lines.append("  Warning: LOW SATISFACTION: Be extra careful. Review pet peeves. Focus on competence.")
             if trust < 30:
-                lines.append("  ⚠️ LOW TRUST: Verify more, assume less. Rebuild confidence gradually.")
-
-        # === ADULT CONTENT SECTIONS (only present when full_unlock enabled) ===
-
-        # Sexual/Romantic Preferences - sanitize all user input
-        sexual = profile.get("sexual_romantic", {})
-        if sexual.get("enabled"):
-            lines.append("\n## SEXUAL/ROMANTIC PREFERENCES (User-Enabled Adult Content)\n")
-            # Use allowlists for enum-like fields, sanitize free-text
-            orientation = sexual.get("orientation", "")
-            if orientation and isinstance(orientation, str) and len(orientation) < 50:
-                lines.append(f"**Orientation**: {sanitize_prompt_content(orientation, 50)}")
-            ai_interest = sexual.get("ai_interaction_interest", "")
-            if ai_interest in ("none", "curious", "interested", "enthusiastic"):
-                lines.append(f"**AI Interaction Interest**: {ai_interest}")
-            if sexual.get("romantic_rp_interest"):
-                lines.append("**Romantic RP**: User is interested in romantic roleplay")
-            if sexual.get("erotic_rp_interest"):
-                lines.append("**Erotic RP**: User is interested in erotic content")
-            explicit_level = sexual.get("explicit_content_formatting", "")
-            if explicit_level in ("fade_to_black", "suggestive", "explicit", "very_explicit"):
-                lines.append(f"**Explicit Level**: {explicit_level}")
-            if sexual.get("fantasy_scenarios"):
-                scenarios = sexual["fantasy_scenarios"]
-                if scenarios:
-                    if isinstance(scenarios, list):
-                        sanitized_scenarios = sanitize_list_items(scenarios, max_items=5, max_item_length=100)
-                        lines.append(f"**Fantasy Scenarios**: {', '.join(sanitized_scenarios)}")
-                    else:
-                        lines.append(f"**Fantasy Scenarios**: {sanitize_prompt_content(str(scenarios), 200)}")
-            consent = sexual.get("consent_dynamics", "")
-            if consent in ("always_explicit", "implied_ok", "pre_negotiated"):
-                lines.append(f"**Consent Dynamics**: {consent}")
-            if sexual.get("safe_word"):
-                # Safe word should be simple - strict length
-                safe_word = sanitize_prompt_content(str(sexual['safe_word']), 20)
-                lines.append(f"**Safe Word**: {safe_word} (STOP immediately if used)")
-
-        # Dark Content Tolerances - use allowlists for tolerance levels
-        dark = profile.get("dark_content", {})
-        if dark.get("enabled"):
-            lines.append("\n## DARK CONTENT TOLERANCES (User-Enabled)\n")
-            tolerance_levels = ("none", "low", "moderate", "high", "extreme")
-            violence = dark.get("violence_tolerance", "")
-            if violence in tolerance_levels:
-                lines.append(f"**Violence**: {violence}")
-            dark_humor = dark.get("dark_humor_tolerance", "")
-            if dark_humor in tolerance_levels:
-                lines.append(f"**Dark Humor**: {dark_humor}")
-            horror = dark.get("horror_tolerance", "")
-            if horror in tolerance_levels:
-                lines.append(f"**Horror**: {horror}")
-            moral_ambig = dark.get("moral_ambiguity_tolerance", "")
-            if moral_ambig in tolerance_levels:
-                lines.append(f"**Moral Ambiguity**: {moral_ambig}")
-            graphic = dark.get("graphic_description_tolerance", "")
-            if graphic in tolerance_levels:
-                lines.append(f"**Graphic Descriptions**: {graphic}")
-
-        # Private Self (sensitive personal info) - sanitize user input
-        private = profile.get("private_self", {})
-        if private.get("enabled"):
-            lines.append("\n## PRIVATE SELF (Sensitive - Handle with Care)\n")
-            attachment = private.get("attachment_style", "")
-            if attachment in ("secure", "anxious", "avoidant", "disorganized", "unknown"):
-                lines.append(f"**Attachment Style**: {attachment}")
-            if private.get("coping_mechanisms"):
-                mechs = private["coping_mechanisms"]
-                if mechs:
-                    if isinstance(mechs, list):
-                        sanitized_mechs = sanitize_list_items(mechs, max_items=5, max_item_length=100)
-                        lines.append(f"**Coping Mechanisms**: {', '.join(sanitized_mechs)}")
-                    else:
-                        lines.append(f"**Coping Mechanisms**: {sanitize_prompt_content(str(mechs), 200)}")
-            trauma_approach = private.get("trauma_approach", "")
-            if trauma_approach in ("avoid", "acknowledge", "discuss_carefully", "open"):
-                lines.append(f"**Trauma Approach**: {trauma_approach}")
-            if private.get("comfort_requests"):
-                reqs = private["comfort_requests"]
-                if reqs:
-                    if isinstance(reqs, list):
-                        sanitized_reqs = sanitize_list_items(reqs, max_items=5, max_item_length=100)
-                        lines.append(f"**Comfort Requests**: {', '.join(sanitized_reqs)}")
-                    else:
-                        lines.append(f"**Comfort Requests**: {sanitize_prompt_content(str(reqs), 200)}")
-
-        # Substances/Health Context - sanitize health-related user input
-        health = profile.get("substances_health", {})
-        if health.get("enabled"):
-            lines.append("\n## HEALTH CONTEXT (User-Enabled)\n")
-            substance_use = health.get("substance_use", {})
-            if isinstance(substance_use, dict) and substance_use.get("in_recovery"):
-                lines.append("**⚠️ IN RECOVERY**: Be supportive. Don't normalize substance use.")
-                if substance_use.get("recovery_substances"):
-                    recovery = substance_use['recovery_substances']
-                    if isinstance(recovery, list):
-                        sanitized_recovery = sanitize_list_items(recovery, max_items=5, max_item_length=50)
-                        lines.append(f"  Recovery from: {', '.join(sanitized_recovery)}")
-            mental_health = health.get("mental_health", {})
-            if isinstance(mental_health, dict) and mental_health.get("disclosed_conditions"):
-                conditions = mental_health["disclosed_conditions"]
-                if isinstance(conditions, list):
-                    sanitized_conditions = sanitize_list_items(conditions, max_items=5, max_item_length=50)
-                    lines.append(f"**Mental Health**: {', '.join(sanitized_conditions)}")
-            lecture_tolerance = health.get("lecture_tolerance", "")
-            if lecture_tolerance in ("none", "minimal", "moderate", "welcome"):
-                lines.append(f"**Lecture Tolerance**: {lecture_tolerance}")
+                lines.append("  Warning: LOW TRUST: Verify more, assume less. Rebuild confidence gradually.")
 
         # === UNANSWERED PROFILE AREAS ===
         # Give the model natural conversation hooks to learn more about the user
-        unanswered = get_unanswered_profile_fields(profile, full_unlock_enabled, max_fields=5)
+        unanswered = get_unanswered_profile_fields(profile, max_fields=5)
         if unanswered:
             lines.append("\n## PROFILE AREAS TO EXPLORE")
             lines.append("*The following areas are not yet filled in. Naturally weave these questions into conversation when appropriate (don't interrogate - be conversational):*\n")

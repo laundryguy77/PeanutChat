@@ -116,23 +116,14 @@ class AdminService:
             "created_at": row["created_at"]
         }
 
-        # Get profile data
-        profile_row = self.db.fetchone("""
-            SELECT profile_data, adult_mode_enabled, full_unlock_enabled
-            FROM user_profiles WHERE user_id = ?
-        """, (user_id,))
-
-        if profile_row:
-            try:
-                profile_data = json.loads(profile_row["profile_data"]) if profile_row["profile_data"] else {}
-                user["profile"] = {
-                    "data": profile_data,
-                    "adult_mode_enabled": bool(profile_row["adult_mode_enabled"]),
-                    "full_unlock_enabled": bool(profile_row["full_unlock_enabled"])
-                }
-            except json.JSONDecodeError:
-                user["profile"] = None
-        else:
+        # Get profile data from markdown file
+        from app.services.profile_markdown_service import get_profile_markdown_service
+        import asyncio
+        try:
+            md_service = get_profile_markdown_service()
+            profile_data = asyncio.get_event_loop().run_until_complete(md_service.get_profile(user_id))
+            user["profile"] = {"data": profile_data}
+        except Exception:
             user["profile"] = None
 
         # Get feature overrides for this user

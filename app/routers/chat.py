@@ -464,26 +464,10 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         # === Load User Profile ===
         profile_service = get_user_profile_service()
         profile_context = None
-        full_unlock_active = False  # Track if adult sections are unlocked for unanswered questions
         try:
-            # Base sections always loaded
+            # Load all standard profile sections
             sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
                                 "boundaries", "relationship_metrics", "interaction"]
-
-            # Get session ID from request headers for session-scoped unlock check
-            session_id = request.headers.get("X-Session-ID")
-
-            # Check if session has adult content unlocked
-            # CRITICAL: This checks session-scoped unlock, NOT database status
-            # New sessions start LOCKED by default (child safety requirement)
-            adult_status = await profile_service.get_adult_mode_status(user.id)
-            session_unlock_status = await profile_service.get_session_unlock_status(user.id, session_id) if session_id else {"enabled": False}
-
-            # Both Tier 1 (adult_mode) AND session unlock required for adult sections
-            full_unlock_active = adult_status.get("enabled") and session_unlock_status.get("enabled")
-            if full_unlock_active:
-                sections_to_load.extend(["sexual_romantic", "dark_content", "private_self", "substances_health"])
-                logger.debug("Session unlock enabled - including sensitive sections in prompt")
 
             profile_sections = await profile_service.read_sections(
                 user.id,
@@ -545,14 +529,13 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             profile_context=profile_context,
             user_name=user_name,
             has_tools=supports_tools,
-            has_vision=is_vision,
-            full_unlock_enabled=full_unlock_active
+            has_vision=is_vision
         )
 
         # Log system prompt stats for debugging
         prompt_lines = system_prompt.count('\n')
         prompt_chars = len(system_prompt)
-        logger.info(f"[SystemPrompt] {prompt_chars} chars, {prompt_lines} lines, tools={supports_tools}, vision={is_vision}, full_unlock={full_unlock_active}")
+        logger.info(f"[SystemPrompt] {prompt_chars} chars, {prompt_lines} lines, tools={supports_tools}, vision={is_vision}")
         if profile_context:
             populated_sections = [k for k, v in profile_context.items() if v and isinstance(v, dict) and any(v.values())]
             logger.debug(f"[Profile] Populated sections: {populated_sections}")
@@ -1170,25 +1153,10 @@ async def regenerate_response(
         # === Load User Profile ===
         profile_service = get_user_profile_service()
         profile_context = None
-        full_unlock_active = False  # Track if adult sections are unlocked
         try:
-            # Base sections always loaded
+            # Load all standard profile sections
             sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
                                 "boundaries", "relationship_metrics", "interaction"]
-
-            # Get session ID from request headers for session-scoped unlock check
-            session_id = request.headers.get("X-Session-ID")
-
-            # Check if session has adult content unlocked
-            # CRITICAL: This checks session-scoped unlock, NOT database status
-            adult_status = await profile_service.get_adult_mode_status(user.id)
-            session_unlock_status = await profile_service.get_session_unlock_status(user.id, session_id) if session_id else {"enabled": False}
-
-            # Both Tier 1 (adult_mode) AND session unlock required for adult sections
-            full_unlock_active = adult_status.get("enabled") and session_unlock_status.get("enabled")
-            if full_unlock_active:
-                sections_to_load.extend(["sexual_romantic", "dark_content", "private_self", "substances_health"])
-                logger.debug("Regenerate: Session unlock enabled - including sensitive sections")
 
             profile_sections = await profile_service.read_sections(
                 user.id,
@@ -1247,8 +1215,7 @@ async def regenerate_response(
             profile_context=profile_context,
             user_name=user_name,
             has_tools=supports_tools,
-            has_vision=is_vision,
-            full_unlock_enabled=full_unlock_active
+            has_vision=is_vision
         )
 
         # Build messages with memory-enhanced system prompt

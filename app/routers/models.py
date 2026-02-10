@@ -7,14 +7,10 @@ from app.config import get_settings, update_settings
 from app.models.schemas import ModelSelectRequest
 from app.middleware.auth import require_auth, optional_auth
 from app.models.auth_schemas import UserResponse
-from app.services.user_profile_service import get_user_profile_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/models", tags=["models"])
-
-# Keywords indicating uncensored/adult models
-ADULT_MODEL_KEYWORDS = ["uncensored", "abliterated", "nsfw", "adult", "xxx"]
 
 
 async def get_vram_usage() -> dict:
@@ -57,38 +53,14 @@ async def list_models(user: Optional[UserResponse] = Depends(optional_auth)) -> 
     """List chat-capable models with their capabilities.
 
     Returns filtered list excluding embedding models, with capability flags.
-    Filters uncensored models when adult mode is disabled.
     """
     try:
         models = await ollama_service.get_chat_models_with_capabilities()
         current = get_settings().model
 
-        # Check adult mode status if user is authenticated
-        # Only Tier 1 (passcode) required for uncensored models
-        # Tier 2 (/full_unlock) is for personality/content changes, not model filtering
-        adult_mode = False
-        if user:
-            try:
-                profile_service = get_user_profile_service()
-                adult_status = await profile_service.get_adult_mode_status(user.id)
-                adult_mode = adult_status.get("enabled", False)
-            except Exception as e:
-                logger.debug(f"Could not get adult mode status: {e}")
-
-        # Filter out uncensored models if adult mode is disabled
-        if not adult_mode:
-            filtered_models = []
-            for model in models:
-                model_name_lower = model.get("name", "").lower()
-                is_adult_model = any(keyword in model_name_lower for keyword in ADULT_MODEL_KEYWORDS)
-                if not is_adult_model:
-                    filtered_models.append(model)
-            models = filtered_models
-
         return {
             "models": models,
-            "current": current,
-            "adult_mode": adult_mode
+            "current": current
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch models: {str(e)}")

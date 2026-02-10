@@ -28,7 +28,7 @@ class CreateUserRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     is_admin: Optional[bool] = None
     is_active: Optional[bool] = None
-    mode_restriction: Optional[str] = None  # null, "normal_only", "no_full_unlock"
+    mode_restriction: Optional[str] = None  # Deprecated, kept for API compatibility
 
 
 class ResetPasswordRequest(BaseModel):

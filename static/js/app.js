@@ -22,40 +22,6 @@ class App {
         // Auth state
         this.isAuthenticated = false;
         this.appInitStarted = false;
-        // Session ID for adult content gating
-        // CRITICAL: New sessions start locked. User must run /full_unlock enable each session.
-        this.sessionId = this.generateSessionId();
-    }
-
-    /**
-     * Generate a unique session ID for this browser session.
-     * Session ID resets on browser refresh/tab close (critical child safety requirement).
-     */
-    generateSessionId() {
-        // Check if we already have a session ID for this tab
-        let sessionId = sessionStorage.getItem('peanutchat_session_id');
-        if (!sessionId) {
-            // Generate a new UUID-like session ID (with fallback for non-secure contexts)
-            const uuid = (typeof crypto.randomUUID === 'function')
-                ? crypto.randomUUID()
-                : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-                    const r = Math.random() * 16 | 0;
-                    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
-                });
-            sessionId = 'sess_' + uuid;
-            sessionStorage.setItem('peanutchat_session_id', sessionId);
-        }
-        return sessionId;
-    }
-
-    /**
-     * Get headers with session ID for API requests.
-     * All requests should include this to enable session-scoped adult content.
-     */
-    getSessionHeaders() {
-        return {
-            'X-Session-ID': this.sessionId
-        };
     }
 
     async init() {
@@ -485,7 +451,7 @@ class App {
                 credentials: 'include'
             });
             const data = await response.json();
-            console.log('[loadModels] Got', data.models?.length, 'models, adult_mode:', data.adult_mode);
+            console.log('[loadModels] Got', data.models?.length, 'models');
 
             // Filter out embedding models that cannot chat
             const chatModels = (data.models || []).filter(model => {

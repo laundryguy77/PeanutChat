@@ -59,19 +59,12 @@ class StatsService:
         )
         recent_users = recent["count"] if recent else 0
 
-        # Users with adult mode enabled
-        adult_mode = self.db.fetchone(
-            "SELECT COUNT(*) as count FROM user_profiles WHERE adult_mode_enabled = 1"
-        )
-        adult_mode_count = adult_mode["count"] if adult_mode else 0
-
         return {
             "total": total_users,
             "active": active_users,
             "inactive": total_users - active_users,
             "admins": admin_count,
-            "recent_signups": recent_users,
-            "adult_mode_enabled": adult_mode_count
+            "recent_signups": recent_users
         }
 
     def _get_conversation_stats(self) -> Dict[str, Any]:
