@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 import subprocess
 import logging
 from app.services.ollama import ollama_service
@@ -7,6 +7,11 @@ from app.config import get_settings, update_settings
 from app.models.schemas import ModelSelectRequest
 from app.middleware.auth import require_auth, optional_auth
 from app.models.auth_schemas import UserResponse
+from app.services.model_registry import (
+    PROVIDER_OLLAMA,
+    get_model_capabilities as get_model_capabilities_unified,
+    get_openrouter_models,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +60,24 @@ async def list_models(user: Optional[UserResponse] = Depends(optional_auth)) -> 
     Returns filtered list excluding embedding models, with capability flags.
     """
     try:
-        models = await ollama_service.get_chat_models_with_capabilities()
+        # OpenRouter curated models (always shown)
+        openrouter_models = get_openrouter_models()
+
+        # Ollama discovered models
+        try:
+            ollama_models = await ollama_service.get_chat_models_with_capabilities()
+        except Exception as e:
+            logger.warning(f"Failed to list Ollama models: {e}")
+            ollama_models = []
+        for m in ollama_models:
+            m["provider"] = PROVIDER_OLLAMA
+
         current = get_settings().model
+        models = openrouter_models + ollama_models
 
         return {
             "models": models,
-            "current": current
+            "current": current,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch models: {str(e)}")
@@ -85,13 +102,11 @@ async def get_model_capabilities() -> Dict[str, Any]:
     settings = get_settings()
     model = settings.model
 
-    # Get full capability info
-    info = await ollama_service.get_model_capabilities(model)
+    info = await get_model_capabilities_unified(model)
     capabilities = info.get("capabilities", [])
-
-    is_vision = "vision" in capabilities or await ollama_service.is_vision_model(model)
-    supports_tools = "tools" in capabilities or await ollama_service.supports_tools(model)
-    supports_thinking = "thinking" in capabilities
+    is_vision = bool(info.get("supports_vision"))
+    supports_tools = bool(info.get("supports_tools"))
+    supports_thinking = bool(info.get("supports_thinking"))
 
     # Define available tools based on capabilities
     tools = []
@@ -144,7 +159,7 @@ async def get_model_capabilities_endpoint(model_name: str):
 
     Note: Uses :path converter to allow model names with slashes (e.g., huihui_ai/model:tag)
     """
-    return await ollama_service.get_comprehensive_capabilities(model_name)
+    return await get_model_capabilities_unified(model_name)
 
 
 @router.get("/tools")
@@ -160,9 +175,9 @@ async def list_available_tools(user: UserResponse = Depends(require_auth)) -> Di
     settings = get_settings()
     model = settings.model
 
-    # Get model capabilities
-    is_vision = await ollama_service.is_vision_model(model)
-    supports_tools = await ollama_service.supports_tools(model)
+    caps = await get_model_capabilities_unified(model)
+    is_vision = bool(caps.get("supports_vision"))
+    supports_tools = bool(caps.get("supports_tools"))
 
     # Get MCP tools
     mcp_manager = get_mcp_manager()

@@ -21,7 +21,7 @@ class ProfileManager {
             return;
         }
 
-        // Only load profile once per session
+        // Only load profile once per session (settings modal open/close)
         if (this.initialized && this.profile) {
             // Just re-render with cached data
             console.log('[Profile] Using cached profile');
@@ -45,8 +45,8 @@ class ProfileManager {
                 // Initialize with empty profile structure if none exists
                 this.profile = data.profile || {
                     identity: {},
-                    relationship_metrics: {},
-                    communication: {}
+                    persona_preferences: {},
+                    profile_md: ''
                 };
                 this.render();
             } else if (response.status === 401) {
@@ -57,8 +57,8 @@ class ProfileManager {
                 // Even if profile fetch fails, show UI with defaults
                 this.profile = {
                     identity: {},
-                    relationship_metrics: {},
-                    communication: {}
+                    persona_preferences: {},
+                    profile_md: ''
                 };
                 this.render();
             }
@@ -67,8 +67,8 @@ class ProfileManager {
             // Show UI with defaults on error
             this.profile = {
                 identity: {},
-                relationship_metrics: {},
-                communication: {}
+                persona_preferences: {},
+                profile_md: ''
             };
             this.render();
         }
@@ -86,75 +86,46 @@ class ProfileManager {
         `;
     }
 
+    escapeHtml(text) {
+        return String(text ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     render() {
         const container = document.getElementById('profile-section');
         if (!container || !this.profile) return;
 
         const identity = this.profile.identity || {};
-        const metrics = this.profile.relationship_metrics || {};
-        const comm = this.profile.communication || {};
+        const persona = this.profile.persona_preferences || {};
+        const notes = this.profile.profile_md || '';
 
         container.innerHTML = `
             <div class="space-y-4">
-                <!-- Basic Info -->
                 <div class="space-y-3">
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Preferred Name</label>
                         <input type="text" id="profile-name"
                                class="w-full bg-background-dark border border-gray-700 rounded-lg p-2 text-white text-sm"
-                               value="${identity.preferred_name || ''}"
+                               value="${this.escapeHtml(identity.preferred_name || '')}"
                                placeholder="What should I call you?">
                     </div>
                     <div>
                         <label class="block text-sm text-gray-400 mb-1">Assistant Name</label>
                         <input type="text" id="profile-assistant-name"
                                class="w-full bg-background-dark border border-gray-700 rounded-lg p-2 text-white text-sm"
-                               value="${this.profile.persona_preferences?.assistant_name || ''}"
+                               value="${this.escapeHtml(persona.assistant_name || '')}"
                                placeholder="Name your AI assistant (default: PeanutChat)">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1">Communication Style</label>
-                        <select id="profile-style"
-                                class="w-full bg-background-dark border border-gray-700 rounded-lg p-2 text-white text-sm">
-                            <option value="candid_direct" ${comm.conversation_style === 'candid_direct' ? 'selected' : ''}>Candid & Direct</option>
-                            <option value="quirky_imaginative" ${comm.conversation_style === 'quirky_imaginative' ? 'selected' : ''}>Quirky & Imaginative</option>
-                            <option value="nerdy_exploratory" ${comm.conversation_style === 'nerdy_exploratory' ? 'selected' : ''}>Nerdy & Exploratory</option>
-                            <option value="sarcastic_dry" ${comm.conversation_style === 'sarcastic_dry' ? 'selected' : ''}>Sarcastic & Dry</option>
-                            <option value="empathetic_supportive" ${comm.conversation_style === 'empathetic_supportive' ? 'selected' : ''}>Empathetic & Supportive</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label class="block text-sm text-gray-400 mb-1">Response Length</label>
-                        <select id="profile-length"
-                                class="w-full bg-background-dark border border-gray-700 rounded-lg p-2 text-white text-sm">
-                            <option value="brief" ${comm.response_length === 'brief' ? 'selected' : ''}>Brief</option>
-                            <option value="adaptive" ${comm.response_length === 'adaptive' ? 'selected' : ''}>Adaptive</option>
-                            <option value="detailed" ${comm.response_length === 'detailed' ? 'selected' : ''}>Detailed</option>
-                        </select>
-                    </div>
-                </div>
-
-                <!-- Relationship Stats -->
-                <div class="bg-background-dark rounded-xl p-4">
-                    <h4 class="text-sm font-medium text-gray-300 mb-3">Relationship Stats</h4>
-                    <div class="grid grid-cols-3 gap-3 text-center">
-                        <div>
-                            <div class="text-xl font-bold text-primary">${metrics.satisfaction_level || 50}</div>
-                            <div class="text-xs text-gray-500">Satisfaction</div>
-                        </div>
-                        <div>
-                            <div class="text-xl font-bold text-green-400">${metrics.trust_level || 50}</div>
-                            <div class="text-xs text-gray-500">Trust</div>
-                        </div>
-                        <div>
-                            <div class="text-xl font-bold text-blue-400">${metrics.interaction_count || 0}</div>
-                            <div class="text-xs text-gray-500">Interactions</div>
-                        </div>
-                    </div>
-                    <div class="mt-3 text-center">
-                        <span class="text-xs px-2 py-1 rounded-full ${this.getStageColor(metrics.relationship_stage)}">
-                            ${this.capitalizeStage(metrics.relationship_stage || 'new')}
-                        </span>
+                        <label class="block text-sm text-gray-400 mb-1">Profile Notes (Markdown)</label>
+                        <textarea id="profile-notes" rows="6"
+                                  class="w-full bg-background-dark border border-gray-700 rounded-lg p-2 text-white text-sm resize-y"
+                                  placeholder="Anything the assistant should remember across chats...">${this.escapeHtml(notes)}</textarea>
+                        <p class="text-xs text-gray-500 mt-1">This is injected into the system prompt each message.</p>
                     </div>
                 </div>
 
@@ -194,8 +165,7 @@ class ProfileManager {
         const inputs = [
             { id: 'profile-name', event: 'input' },
             { id: 'profile-assistant-name', event: 'input' },
-            { id: 'profile-style', event: 'change' },
-            { id: 'profile-length', event: 'change' }
+            { id: 'profile-notes', event: 'input' }
         ];
 
         inputs.forEach(({ id, event }) => {
@@ -278,27 +248,12 @@ class ProfileManager {
         }
     }
 
-    getStageColor(stage) {
-        const colors = {
-            'new': 'bg-gray-500/20 text-gray-400',
-            'familiar': 'bg-blue-500/20 text-blue-400',
-            'established': 'bg-green-500/20 text-green-400',
-            'deep': 'bg-purple-500/20 text-purple-400'
-        };
-        return colors[stage] || colors.new;
-    }
-
-    capitalizeStage(stage) {
-        return stage.charAt(0).toUpperCase() + stage.slice(1);
-    }
-
     // Profile Operations
 
     async saveProfile() {
         const name = document.getElementById('profile-name')?.value;
         const assistantName = document.getElementById('profile-assistant-name')?.value;
-        const style = document.getElementById('profile-style')?.value;
-        const length = document.getElementById('profile-length')?.value;
+        const notes = document.getElementById('profile-notes')?.value;
 
         const updates = [];
 
@@ -323,24 +278,10 @@ class ProfileManager {
             console.log('[Profile] Caching assistant_name:', assistantName || '(default)');
         }
 
-        if (style) {
-            updates.push({ path: 'communication.conversation_style', value: style, operation: 'set' });
-            // Update in-memory cache
-            if (!this.profile.communication) {
-                this.profile.communication = {};
-            }
-            this.profile.communication.conversation_style = style;
-            console.log('[Profile] Caching conversation_style:', style);
-        }
-
-        if (length) {
-            updates.push({ path: 'communication.response_length', value: length, operation: 'set' });
-            // Update in-memory cache
-            if (!this.profile.communication) {
-                this.profile.communication = {};
-            }
-            this.profile.communication.response_length = length;
-            console.log('[Profile] Caching response_length:', length);
+        if (notes !== undefined) {
+            updates.push({ path: 'profile_md', value: notes || '', operation: 'set' });
+            this.profile.profile_md = notes || '';
+            console.log('[Profile] Caching profile_md:', (notes || '').length, 'chars');
         }
 
         if (updates.length === 0) return;

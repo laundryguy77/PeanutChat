@@ -376,6 +376,13 @@ Use this information to personalize your responses. Don't explicitly mention "ac
         if identity_items:
             lines.extend(identity_items)
 
+        # Lightweight free-form profile notes (markdown-style)
+        notes = profile.get("profile_md")
+        if isinstance(notes, str) and notes.strip():
+            safe_notes = sanitize_prompt_content(notes, max_length=2000)
+            if safe_notes:
+                lines.append("\n### Notes\n" + safe_notes)
+
         # Communication preferences - use allowlists for enum-like fields
         comm = profile.get("communication", {})
         comm_items = []

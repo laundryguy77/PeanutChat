@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 from app.services.ollama import ollama_service
+from app.services.openrouter import openrouter_service
 from app.services.memory_service import get_memory_service
 from app.services.system_prompt_builder import get_prompt_builder
 from app.services import compaction_service
@@ -16,6 +17,11 @@ from app.services.mcp_client import get_mcp_manager
 from app.services.user_profile_service import get_user_profile_service
 from app.services.evaluator_service import get_evaluator_service
 from app.services.feature_service import get_feature_service
+from app.services.model_registry import (
+    PROVIDER_OPENROUTER,
+    get_model_capabilities as get_model_capabilities_unified,
+    get_model_provider,
+)
 
 logger = logging.getLogger(__name__)
 from app.services.tool_executor import tool_executor, create_context
@@ -24,6 +30,8 @@ from app.services.file_processor import file_processor
 from app.tools.definitions import get_tools_for_model
 from app.config import (
     get_settings,
+    COMPACTION_MODEL,
+    EXTRACTION_MODEL,
     THINKING_TOKEN_LIMIT_INITIAL, THINKING_TOKEN_LIMIT_FOLLOWUP,
     THINKING_HARD_LIMIT_INITIAL, THINKING_HARD_LIMIT_FOLLOWUP
 )
@@ -268,7 +276,8 @@ async def build_context_with_compaction(
             conv_id=conv_id,
             messages=messages,
             indices_to_compact=indices,
-            model=settings.model,
+            # Use a dedicated local model for compaction (provider-agnostic).
+            model=COMPACTION_MODEL,
             existing_summary=current_summary,
             existing_summary_tokens=summary_tokens,
             user_id=user_id
@@ -407,10 +416,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         # Update context with conversation ID (in case it changed)
         tool_ctx.conversation_id = conv_id
 
-        # Check if current model supports vision and tools
-        is_vision = await ollama_service.is_vision_model(settings.model)
-        supports_tools = await ollama_service.supports_tools(settings.model)
-        logger.info(f"Chat request: model={settings.model}, vision={is_vision}, tools={supports_tools}")
+        # Check if current model supports vision and tools (provider-aware)
+        caps = await get_model_capabilities_unified(settings.model)
+        provider = caps.get("provider") or get_model_provider(settings.model)
+        is_vision = bool(caps.get("supports_vision"))
+        supports_tools = bool(caps.get("supports_tools"))
+        logger.info(f"Chat request: provider={provider}, model={settings.model}, vision={is_vision}, tools={supports_tools}")
         logger.debug(f"Images received: {len(chat_request.images) if chat_request.images else 0}")
 
         # Get appropriate tools for this model (only if it supports tools)
@@ -453,8 +464,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         # If images were uploaded but model doesn't support vision, inform the model
         if chat_request.images and not is_vision:
             # Get model capabilities to provide helpful context
-            capabilities = await ollama_service.get_model_capabilities(settings.model)
-            caps_list = capabilities.get("capabilities", [])
+            caps_list = caps.get("capabilities", [])
             caps_str = ", ".join(caps_list) if caps_list else "text processing"
 
             image_notice = f"\n\n[SYSTEM NOTE: The user has attached {len(chat_request.images)} image(s), but you are a text-only model without vision capabilities. You cannot see or analyze these images. Please politely inform the user that you cannot view images and suggest they use a vision-capable model (like llava, moondream, or llama3.2-vision) for image analysis. You can help with: {caps_str}.]"
@@ -465,14 +475,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         profile_service = get_user_profile_service()
         profile_context = None
         try:
-            # Load all standard profile sections
-            sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
-                                "boundaries", "relationship_metrics", "interaction"]
-
+            # Lightweight, always-on sections (keep this intentionally small)
+            sections_to_load = ["identity", "communication", "persona_preferences", "profile_md"]
             profile_sections = await profile_service.read_sections(
                 user.id,
                 sections_to_load,
-                include_disabled=False
+                include_disabled=True
             )
             if profile_sections:
                 profile_context = profile_sections
@@ -491,7 +499,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             try:
                 search_terms = await extract_memory_search_terms(
                     chat_request.message,
-                    settings.model
+                    EXTRACTION_MODEL
                 )
                 logger.info(f"Memory search terms: {search_terms}")
                 if not search_terms:
@@ -535,7 +543,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
         # Log system prompt stats for debugging
         prompt_lines = system_prompt.count('\n')
         prompt_chars = len(system_prompt)
-        logger.info(f"[SystemPrompt] {prompt_chars} chars, {prompt_lines} lines, tools={supports_tools}, vision={is_vision}")
+        logger.info(f"[SystemPrompt] {prompt_chars} chars, {prompt_lines} lines, provider={provider}, tools={supports_tools}, vision={is_vision}")
         if profile_context:
             populated_sections = [k for k, v in profile_context.items() if v and isinstance(v, dict) and any(v.values())]
             logger.debug(f"[Profile] Populated sections: {populated_sections}")
@@ -628,14 +636,23 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
             thinking_token_count = 0
             logger.debug(f"Starting stream with think={chat_request.think}")
 
-            # Stream from Ollama - track for cleanup
-            active_stream = ollama_service.chat_stream(
-                messages=messages,
-                model=settings.model,
-                tools=tools,
-                options=options,
-                think=chat_request.think
-            )
+            # Stream from the selected provider - track for cleanup
+            if provider == PROVIDER_OPENROUTER:
+                active_stream = openrouter_service.chat_stream(
+                    messages=messages,
+                    model=settings.model,
+                    tools=tools,
+                    options=options,
+                    think=chat_request.think,
+                )
+            else:
+                active_stream = ollama_service.chat_stream(
+                    messages=messages,
+                    model=settings.model,
+                    tools=tools,
+                    options=options,
+                    think=chat_request.think,
+                )
             async for chunk in active_stream:
                 # Debug: log chunks that have thinking content
                 if chunk.get("message", {}).get("thinking"):
@@ -703,6 +720,12 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                 parsed_calls = parse_text_function_calls(collected_content)
                 if parsed_calls:
                     logger.info(f"Parsed {len(parsed_calls)} text-based function call(s)")
+                    # OpenAI/OpenRouter tool results require tool_call_id linking.
+                    if provider == PROVIDER_OPENROUTER:
+                        for i, tc in enumerate(parsed_calls):
+                            if isinstance(tc, dict) and not tc.get("id"):
+                                tc["id"] = f"call_{i}"
+                                tc.setdefault("type", "function")
                     tool_calls = parsed_calls
 
             # Handle tool calls if any
@@ -784,11 +807,21 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                         "tool": func_name,
                         "result": result
                     }
-                    messages_with_tool.append({
-                        "role": "tool",
-                        "tool_name": func_name,
-                        "content": json.dumps(tool_content)
-                    })
+                    # Provider-specific tool result message shape:
+                    # - OpenAI/OpenRouter: role=tool + tool_call_id
+                    # - Ollama: role=tool + tool_name
+                    if provider == PROVIDER_OPENROUTER and tc.get("id"):
+                        messages_with_tool.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id"),
+                            "content": json.dumps(tool_content),
+                        })
+                    else:
+                        messages_with_tool.append({
+                            "role": "tool",
+                            "tool_name": func_name,
+                            "content": json.dumps(tool_content),
+                        })
 
                 # Add instruction to respond to current results
                 messages_with_tool.append({
@@ -804,12 +837,20 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                 logger.debug(f"Starting follow-up stream with {len(messages_with_tool)} messages")
                 thinking_count = 0
                 # Track follow-up stream for cleanup
-                followup_stream = ollama_service.chat_stream(
-                    messages=messages_with_tool,
-                    model=settings.model,
-                    options=options,
-                    think=False
-                )
+                if provider == PROVIDER_OPENROUTER:
+                    followup_stream = openrouter_service.chat_stream(
+                        messages=messages_with_tool,
+                        model=settings.model,
+                        options=options,
+                        think=False,
+                    )
+                else:
+                    followup_stream = ollama_service.chat_stream(
+                        messages=messages_with_tool,
+                        model=settings.model,
+                        options=options,
+                        think=False,
+                    )
                 try:
                     async for chunk in followup_stream:
                         msg = chunk.get("message", {})
@@ -963,7 +1004,7 @@ async def chat(request: Request, user: UserResponse = Depends(require_auth)):
                 # Even the error yield failed - client is gone
                 pass
         finally:
-            # Clean up any active Ollama streams
+            # Clean up any active model streams
             if active_stream is not None:
                 try:
                     await active_stream.aclose()
@@ -1132,9 +1173,11 @@ async def regenerate_response(
 
         settings = get_settings()
 
-        # Check model capabilities
-        is_vision = await ollama_service.is_vision_model(settings.model)
-        supports_tools = await ollama_service.supports_tools(settings.model)
+        # Check model capabilities (provider-aware)
+        caps = await get_model_capabilities_unified(settings.model)
+        provider = caps.get("provider") or get_model_provider(settings.model)
+        is_vision = bool(caps.get("supports_vision"))
+        supports_tools = bool(caps.get("supports_tools"))
 
         # Get appropriate tools (including MCP tools from connected servers)
         mcp_manager = get_mcp_manager()
@@ -1154,14 +1197,11 @@ async def regenerate_response(
         profile_service = get_user_profile_service()
         profile_context = None
         try:
-            # Load all standard profile sections
-            sections_to_load = ["identity", "communication", "persona_preferences", "pet_peeves",
-                                "boundaries", "relationship_metrics", "interaction"]
-
+            sections_to_load = ["identity", "communication", "persona_preferences", "profile_md"]
             profile_sections = await profile_service.read_sections(
                 user.id,
                 sections_to_load,
-                include_disabled=False
+                include_disabled=True
             )
             if profile_sections:
                 profile_context = profile_sections
@@ -1179,7 +1219,7 @@ async def regenerate_response(
             try:
                 search_terms = await extract_memory_search_terms(
                     user_message,
-                    settings.model
+                    EXTRACTION_MODEL
                 )
                 logger.info(f"Regenerate memory search terms: {search_terms}")
 
@@ -1254,12 +1294,20 @@ async def regenerate_response(
             )
 
             # Store stream for cleanup
-            regen_stream = ollama_service.chat_stream(
-                messages=messages,
-                model=settings.model,
-                tools=tools,
-                options=options
-            )
+            if provider == PROVIDER_OPENROUTER:
+                regen_stream = openrouter_service.chat_stream(
+                    messages=messages,
+                    model=settings.model,
+                    tools=tools,
+                    options=options,
+                )
+            else:
+                regen_stream = ollama_service.chat_stream(
+                    messages=messages,
+                    model=settings.model,
+                    tools=tools,
+                    options=options,
+                )
             async for chunk in regen_stream:
                 if "message" in chunk:
                     msg = chunk["message"]
@@ -1279,6 +1327,11 @@ async def regenerate_response(
                 parsed_calls = parse_text_function_calls(collected_content)
                 if parsed_calls:
                     logger.info(f"Regenerate: Parsed {len(parsed_calls)} text-based function call(s)")
+                    if provider == PROVIDER_OPENROUTER:
+                        for i, tc in enumerate(parsed_calls):
+                            if isinstance(tc, dict) and not tc.get("id"):
+                                tc["id"] = f"call_{i}"
+                                tc.setdefault("type", "function")
                     tool_calls = parsed_calls
 
             # Handle tool calls if any (simplified version)

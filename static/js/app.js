@@ -464,7 +464,15 @@ class App {
 
             if (chatModels.length > 0) {
                 let selectedModel = null;
-                chatModels.forEach(model => {
+                const openrouterModels = chatModels.filter(m => m.provider === 'openrouter');
+                const ollamaModels = chatModels.filter(m => m.provider !== 'openrouter');
+
+                const sortByName = (a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+                openrouterModels.sort(sortByName);
+                ollamaModels.sort(sortByName);
+
+                const appendOptions = (container, models) => {
+                    models.forEach(model => {
                     // Store model data for later use
                     this.modelsData[model.name] = model;
 
@@ -487,14 +495,32 @@ class App {
                         this.currentModel = model.name;
                         selectedModel = model;
                     }
-                    select.appendChild(option);
-                });
+                        container.appendChild(option);
+                    });
+                };
+
+                if (openrouterModels.length > 0) {
+                    const group = document.createElement('optgroup');
+                    group.label = 'OpenRouter';
+                    appendOptions(group, openrouterModels);
+                    select.appendChild(group);
+                }
+
+                if (ollamaModels.length > 0) {
+                    const group = document.createElement('optgroup');
+                    group.label = 'Ollama (Local)';
+                    appendOptions(group, ollamaModels);
+                    select.appendChild(group);
+                }
 
                 // If no model matched data.current, use the first model as default
-                if (!selectedModel && chatModels.length > 0) {
-                    select.selectedIndex = 0;
-                    this.currentModel = chatModels[0].name;
-                    selectedModel = chatModels[0];
+                if (!selectedModel) {
+                    const fallback = ollamaModels[0] || openrouterModels[0];
+                    if (fallback) {
+                        select.value = fallback.name;
+                        this.currentModel = fallback.name;
+                        selectedModel = fallback;
+                    }
                 }
 
                 // Always update capability indicators for the selected/default model
@@ -510,7 +536,7 @@ class App {
         } catch (error) {
             console.error('Failed to load models:', error);
             select.innerHTML = '<option value="">Failed to load</option>';
-            this.showError('Failed to load models. Check Ollama connection.');
+            this.showError('Failed to load models. Check backend connectivity/config.');
         }
     }
 
@@ -519,6 +545,7 @@ class App {
         const toolsIcon = document.getElementById('cap-tools');
         const visionIcon = document.getElementById('cap-vision');
         const thinkingIcon = document.getElementById('cap-thinking');
+        const providerIndicator = document.getElementById('model-provider-indicator');
 
         if (toolsIcon) {
             toolsIcon.classList.toggle('hidden', !model?.supports_tools);
@@ -540,6 +567,21 @@ class App {
         const noToolsWarning = document.getElementById('no-tools-warning');
         if (noToolsWarning) {
             noToolsWarning.classList.toggle('hidden', model?.supports_tools !== false);
+        }
+
+        // Provider indicator (OpenRouter vs Ollama)
+        if (providerIndicator) {
+            const isOpenRouter = model?.provider === 'openrouter';
+            providerIndicator.classList.remove('bg-green-500', 'bg-orange-500');
+            if (isOpenRouter) {
+                providerIndicator.classList.add('bg-orange-500');
+                providerIndicator.style.boxShadow = '0 0 8px rgba(249,115,22,0.5)';
+                providerIndicator.title = 'OpenRouter';
+            } else {
+                providerIndicator.classList.add('bg-green-500');
+                providerIndicator.style.boxShadow = '0 0 8px rgba(34,197,94,0.5)';
+                providerIndicator.title = 'Ollama (local)';
+            }
         }
     }
 

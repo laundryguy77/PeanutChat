@@ -78,6 +78,12 @@ export class VoiceManager {
             voiceBtn.addEventListener('click', () => this.toggleRecording());
         }
 
+        // Start voice conversation button (enables conversation mode + auto-play)
+        const voiceConversationBtn = document.getElementById('voice-conversation-btn');
+        if (voiceConversationBtn) {
+            voiceConversationBtn.addEventListener('click', () => this.startVoiceConversation());
+        }
+
         // TTS toggle in tools menu (optional)
         const ttsToggle = document.getElementById('tts-toggle');
         if (ttsToggle) {
@@ -103,6 +109,36 @@ export class VoiceManager {
         } else {
             await this.startRecording();
         }
+    }
+
+    async startVoiceConversation() {
+        // Toggle stop if already recording
+        if (this.isRecording) {
+            await this.stopRecording();
+            return;
+        }
+
+        // Reload to ensure we have the latest server flag
+        await this.loadSettings();
+
+        if (!this.settings.voice_enabled) {
+            this.showToast('Voice features are disabled on the server', 'warning');
+            return;
+        }
+
+        // Enable "conversation" mode and auto-play for hands-free voice chat
+        const ok = await this.saveSettings({
+            voice_mode: 'conversation',
+            auto_play: true
+        });
+        if (!ok) {
+            this.showToast('Failed to enable voice conversation mode', 'error');
+            return;
+        }
+
+        // Refresh local settings before recording
+        await this.loadSettings();
+        await this.startRecording();
     }
 
     async startRecording() {
@@ -198,6 +234,11 @@ export class VoiceManager {
                         input.focus();
                     }
                     console.log('[Voice] Transcription:', result.text);
+
+                    // In conversation mode: auto-send the turn.
+                    if (this.settings.voice_mode === 'conversation' && this.app && typeof this.app.sendMessage === 'function') {
+                        await this.app.sendMessage();
+                    }
                 }
             } else {
                 const error = await response.json();

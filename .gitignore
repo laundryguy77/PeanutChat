@@ -23,6 +23,7 @@ __pycache__/
 generated_images/
 conversations/
 data/profiles/
+reports/
 
 # Environment files
 .env

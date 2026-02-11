@@ -50,6 +50,13 @@ APP_PORT = int(os.getenv("APP_PORT", "8080"))
 # Ollama API
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
+# OpenRouter (OpenAI-compatible cloud LLM API)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+# Optional attribution headers (recommended by OpenRouter)
+OPENROUTER_APP_URL = os.getenv("OPENROUTER_APP_URL", "")
+OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "PeanutChat")
+
 # Brave Search API
 BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
 
@@ -93,6 +100,10 @@ CHAT_REQUEST_TIMEOUT = int(os.getenv("CHAT_REQUEST_TIMEOUT", "300"))  # 5 minute
 # Extraction model for async memory/profile updates (small, fast model)
 # This model runs in background after responses to extract memories and profile updates
 EXTRACTION_MODEL = os.getenv("EXTRACTION_MODEL", "qwen2.5-coder:3b")
+
+# Model used for conversation compaction summaries (defaults to extraction model).
+# Note: Compaction currently uses the Ollama API (local) for reliability and speed.
+COMPACTION_MODEL = os.getenv("COMPACTION_MODEL", EXTRACTION_MODEL)
 
 # =============================================================================
 # Voice Features (TTS/STT)

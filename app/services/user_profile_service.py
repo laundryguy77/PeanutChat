@@ -12,14 +12,30 @@ logger = logging.getLogger(__name__)
 
 class UserProfileService:
     """Business logic for user profile operations."""
-
     def __init__(self):
         self.md_service = get_profile_markdown_service()
 
     async def get_profile(self, user_id: int) -> Dict[str, Any]:
         """Get user's full profile."""
         profile = await self.md_service.get_profile(user_id)
-        return {"profile": profile}
+        normalized = {
+            "identity": {
+                "preferred_name": profile.get("name"),
+                "timezone": profile.get("timezone"),
+                "pronouns": profile.get("pronouns"),
+            },
+            "persona_preferences": {
+                "assistant_name": profile.get("assistant_name"),
+            },
+            "communication": {
+                "conversation_style": profile.get("communication_style"),
+                "response_length": profile.get("response_length"),
+            },
+            "profile_md": profile.get("notes", ""),
+            # Compatibility alias for older consumers.
+            "notes": profile.get("notes", ""),
+        }
+        return {"profile": normalized}
 
     async def update_profile(
         self,
@@ -55,6 +71,8 @@ class UserProfileService:
                 "persona_preferences.assistant_name": "assistant_name",
                 "communication.conversation_style": "communication_style",
                 "communication.response_length": "response_length",
+                "profile_md": "notes",
+                "notes": "notes",
             }
 
             field = field_mapping.get(path, path)
@@ -117,6 +135,7 @@ class UserProfileService:
                 "interaction_count": 0,
                 "relationship_stage": "new",
             },
+            "profile_md": profile.get("notes", ""),
             "notes": profile.get("notes", ""),
         }
 
