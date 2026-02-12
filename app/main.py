@@ -103,11 +103,6 @@ async def startup_security_check():
     if len(config.JWT_SECRET) < 32:
         logger.warning("SECURITY WARNING: JWT_SECRET is shorter than 32 characters. Consider using a longer secret.")
 
-    # Adult-mode passcode is optional. If unset, adult-mode unlock endpoints effectively remain disabled.
-    if not config.ADULT_PASSCODE:
-        logger.info("ADULT_PASSCODE not set - adult-mode unlock is disabled")
-    elif len(config.ADULT_PASSCODE) < 4:
-        logger.warning("SECURITY WARNING: ADULT_PASSCODE is shorter than 4 characters. Consider using a longer passcode.")
     # Feature availability warnings
     if not config.WEB_SEARCH_AVAILABLE:
         logger.warning("BRAVE_SEARCH_API_KEY not set - web search feature disabled")
